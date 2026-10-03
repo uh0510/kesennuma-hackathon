@@ -1,0 +1,162 @@
+/* Apple風の見た目（すりガラス・余白・控えめな動き） */
+:root {
+  --apple-bg: #f5f5f7;
+  --apple-text: #1d1d1f;
+  --apple-text-2: #6e6e73;
+  --apple-text-3: #aeaeb2;
+  --apple-accent: #0071e3;
+  --apple-green: #34c759;
+  --apple-red: #ff3b30;
+  --apple-hairline: rgba(0, 0, 0, 0.08);
+  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+}
+
+html, body { background: var(--apple-bg); color: var(--apple-text); -webkit-font-smoothing: antialiased; }
+
+/* ガラスを映えさせる背景（iOS Safari は background-attachment: fixed が効かないので疑似要素で固定） */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse at 15% 10%, rgba(0, 113, 227, 0.16) 0%, transparent 50%),
+    radial-gradient(ellipse at 85% 85%, rgba(52, 199, 89, 0.12) 0%, transparent 50%),
+    radial-gradient(ellipse at 60% 40%, rgba(90, 200, 250, 0.10) 0%, transparent 60%),
+    var(--apple-bg);
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05), 0 8px 32px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.glass-nav {
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-color: var(--apple-hairline) !important;
+}
+
+/* 下のタブバー（iPhone のホームバーの分だけ余白をとる） */
+.tabbar { padding-bottom: env(safe-area-inset-bottom); }
+.tabbar-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding-top: 8px; color: var(--apple-text-2); }
+.tabbar-btn[data-active] { color: var(--apple-accent); }
+
+/* iOS の設定画面のような一覧 */
+.inset-list { border-radius: 14px; overflow: hidden; }
+.inset-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 12px 16px; }
+.inset-row + .inset-row { border-top: 1px solid var(--apple-hairline); }
+.inset-row .label { color: var(--apple-text-2); flex-shrink: 0; }
+.inset-row .value { text-align: right; word-break: break-all; }
+
+/* 押せる行 */
+.list-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; width: 100%; transition: background 150ms var(--ease-apple); }
+.list-row + .list-row { border-top: 1px solid var(--apple-hairline); }
+.list-row:hover { background: rgba(0, 0, 0, 0.03); }
+.list-row[data-active] { background: rgba(0, 113, 227, 0.08); }
+
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: var(--apple-accent); }
+.section-label { font-size: 13px; color: var(--apple-text-2); padding: 0 16px; margin-bottom: 6px; }
+.headline { letter-spacing: -0.02em; line-height: 1.15; }
+
+/* 消費者画面の iPhone の枠（PC のデモ用） */
+.phone {
+  width: 390px; max-width: 100%; height: 800px; max-height: calc(100dvh - 180px); min-height: 560px;
+  border-radius: 52px; border: 10px solid #1d1d1f; overflow: hidden; position: relative;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.25);
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(0, 113, 227, 0.18) 0%, transparent 55%),
+    radial-gradient(ellipse at 90% 100%, rgba(52, 199, 89, 0.14) 0%, transparent 55%),
+    var(--apple-bg);
+}
+
+@keyframes apple-fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.fadein { animation: apple-fadein 300ms var(--ease-out) both; }
+@media (prefers-reduced-motion: reduce) { .fadein { animation: none; } }
+
+/* ==== 管理画面の部品 ==== */
+.field-label { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+
+/* 押して選ぶカード */
+.choice-card {
+  position: relative; display: block; width: 100%; padding: 14px; border-radius: 16px;
+  background: rgba(255, 255, 255, 0.75); border: 1.5px solid var(--apple-hairline);
+  transition: border-color 180ms var(--ease-apple), box-shadow 180ms var(--ease-apple), background 180ms var(--ease-apple), transform 120ms var(--ease-apple);
+}
+.choice-card:hover { border-color: rgba(0, 113, 227, 0.35); }
+.choice-card:active { transform: scale(0.98); }
+.choice-card[data-checked] { border-color: var(--apple-accent); background: rgba(0, 113, 227, 0.06); box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.12); }
+.choice-check { position: absolute; top: 10px; right: 10px; color: var(--apple-accent); }
+
+/* 大きな数字の入力 */
+.big-number { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 16px; }
+.big-number-input { font-size: 28px !important; font-weight: 700 !important; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+
+/* 今日の数字のまとめ */
+.overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.stat-tile { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-radius: 18px; }
+.stat-icon { width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
+.stat-value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat-value small { font-size: 13px; color: var(--apple-text-2); margin-left: 3px; font-weight: 600; }
+.stat-label2 { font-size: 12px; color: var(--apple-text-2); white-space: nowrap; }
+
+/* 詳細の色付きの帯 */
+.detail-band { position: relative; padding: 24px; color: white; overflow: hidden; }
+.band-shine { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 85% -30%, rgba(255, 255, 255, 0.4), transparent 55%), radial-gradient(ellipse at 0% 120%, rgba(0, 0, 0, 0.18), transparent 50%); }
+
+/* 進み具合（水揚げ → せり → 加工 → 出荷） */
+.stages { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin-bottom: 20px; }
+.stage { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--apple-text-3); }
+.stage + .stage::before { content: ""; position: absolute; top: 16px; right: 50%; width: 100%; height: 2px; background: rgba(0, 0, 0, 0.08); }
+.stage[data-done] + .stage[data-done]::before { background: var(--apple-green); }
+.stage-dot { position: relative; z-index: 1; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: #ececf0; color: var(--apple-text-3); }
+.stage[data-done] { color: var(--apple-text); }
+.stage[data-done] .stage-dot { background: var(--apple-green); color: white; box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.18); }
+
+/* ==== 管理画面の上部：深い海の色の帯 ==== */
+.navy-shell .glass-nav { background: rgba(9, 20, 44, 0.94) !important; border-color: rgba(255, 255, 255, 0.08) !important; }
+/* 帯に重なるカードは透けすぎないように（紺が透けると灰色に濁る） */
+.mgr-overlap .glass { background: rgba(255, 255, 255, 0.94); }
+.glass-tabbar {
+  background: rgba(255, 255, 255, 0.86) !important; border-color: var(--apple-hairline) !important;
+  backdrop-filter: blur(24px) saturate(180%); -webkit-backdrop-filter: blur(24px) saturate(180%);
+}
+.navy-shell .glass-nav .brand { color: #fff; }
+.navy-shell .glass-nav .mantine-ActionIcon-root { color: #fff; }
+.mgr-hero {
+  position: relative; overflow: hidden; color: #fff; padding: 32px 32px 104px;
+  background: linear-gradient(180deg, #09142c 0%, #0c2148 70%, #0f2a57 100%);
+}
+.mgr-hero[data-compact] { padding-top: 0; padding-bottom: 72px; }
+.mgr-hero-glow {
+  position: absolute; inset: -40% -10% auto; height: 160%; pointer-events: none; filter: blur(10px);
+  background: radial-gradient(ellipse at 18% 20%, rgba(10, 132, 255, 0.5), transparent 50%), radial-gradient(ellipse at 85% 35%, rgba(48, 209, 88, 0.22), transparent 45%), radial-gradient(ellipse at 55% 90%, rgba(100, 210, 255, 0.18), transparent 50%);
+}
+.mgr-hero-inner { position: relative; max-width: 1280px; margin: 0 auto; }
+.mgr-date { font-size: 13px; font-weight: 600; letter-spacing: 0.06em; color: #64d2ff; }
+.mgr-overlap { position: relative; max-width: 1344px; margin: -72px auto 0; padding: 0 32px 40px; }
+.stat-tile.on-dark {
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14); color: #fff;
+  backdrop-filter: blur(20px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.stat-tile.on-dark .stat-value small, .stat-tile.on-dark .stat-label2 { color: rgba(255, 255, 255, 0.7); }
+@media (max-width: 47.99em) {
+  .mgr-hero { padding: 20px 16px 76px; }
+  .mgr-hero[data-compact] { padding: 0 0 64px; }
+  .mgr-overlap { margin-top: -60px; padding: 0 16px 24px; }
+}
+
+/* 発行されるラベルの見本 */
+.label-preview { display: flex; gap: 14px; align-items: center; padding: 14px; border-radius: 14px; background: white; border: 1.5px dashed rgba(0, 0, 0, 0.18); }
+
+@media (max-width: 47.99em) {
+  .overview { display: flex; overflow-x: auto; gap: 10px; scroll-snap-type: x mandatory; padding-bottom: 4px; margin: 0 -16px; padding-inline: 16px; }
+  .stat-tile { flex: 0 0 auto; min-width: 150px; scroll-snap-align: start; padding: 14px 16px; }
+  .detail-band { padding: 20px; }
+}
