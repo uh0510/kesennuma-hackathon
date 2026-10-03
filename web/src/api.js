@@ -2,7 +2,7 @@
 // 読み取りは公開キーで直接、書き込みはすべて record-event（Edge Function）を通す
 import { createClient } from '@supabase/supabase-js'
 import { ethers } from 'ethers'
-import { verifyChain, itemKey } from './lib/hash.js'
+import { verifyChain, itemKey, sha256HexBytes } from './lib/hash.js'
 
 export const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
 
@@ -39,6 +39,11 @@ export async function fetchAll() {
   return { items: items.data, events: events.data, ships: ships.data, products: products.data, businesses: businesses.data }
 }
 
+// 写真の公開URL（photos バケットは公開読み取り）
+export const photoUrl = (path) => `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/photos/${path}`
+// compressImage の結果から、送る分だけを取り出す
+const photoBody = (photo) => (photo ? { photo: { base64: photo.base64, mediaType: photo.mediaType } } : {})
+
 // ---- 書き込み（record-event） ----
 async function recordEvent(body) {
   const { data, error } = await supabase.functions.invoke('record-event', { body })
@@ -52,25 +57,25 @@ async function recordEvent(body) {
 }
 
 // 水揚げした個体を登録（個体IDを発行し、landing を記録）
-export function registerIndividual({ itemId, species, weightKg, shipId, catchArea, period, landedAt }) {
+export function registerIndividual({ itemId, species, weightKg, shipId, catchArea, period, landedAt, photo }) {
   return recordEvent({
-    itemId, type: 'landing',
+    itemId, type: 'landing', ...photoBody(photo),
     newItem: { kind: 'individual', species, name: species, weight_kg: weightKg, ship_id: shipId, catch_area: catchArea, landed_at: landedAt },
     payload: { detail: `個体タグ取付・重量 ${weightKg}kg`, period, weight_kg: weightKg },
   })
 }
 
 // 追記（せり・保管・出荷・訂正）
-export function appendEvent(itemId, type, detail) {
-  return recordEvent({ itemId, type, payload: { detail } })
+export function appendEvent(itemId, type, detail, photo) {
+  return recordEvent({ itemId, type, payload: { detail }, ...photoBody(photo) })
 }
 
 // 加工して子IDを発行：親に process を記録し、子の数だけ born を記録する
-export async function processItem({ parent, childIds, productId, name, weights }) {
+export async function processItem({ parent, childIds, productId, name, weights, photo }) {
   await recordEvent({ itemId: parent.id, type: 'process', payload: { detail: `子ID ${childIds.length}件を発行（${name}）`, children: childIds } })
   for (const [i, id] of childIds.entries()) {
     await recordEvent({
-      itemId: id, parentId: parent.id, type: 'born',
+      itemId: id, parentId: parent.id, type: 'born', ...photoBody(photo),
       newItem: { kind: 'product', species: parent.species, name, weight_kg: weights[i], product_id: productId ?? null },
       payload: { detail: `親ID ${parent.id} から発行`, weight_kg: weights[i] },
     })
@@ -83,6 +88,19 @@ export function activateQr(itemId) {
 }
 
 // ---- 改ざん検証 ----
+// 写真を取得して指紋を計算し直し、記録に入っている写真の指紋と一致するか
+export async function verifyPhotos(events) {
+  const list = events.filter((e) => e.payload?.photo?.path)
+  const results = await Promise.all(list.map(async (e) => {
+    try {
+      const res = await fetch(photoUrl(e.payload.photo.path))
+      if (!res.ok) return false
+      return (await sha256HexBytes(await res.arrayBuffer())) === e.payload.photo.sha256
+    } catch { return false }
+  }))
+  return { ok: results.every(Boolean), count: list.length }
+}
+
 // DBの記録からハッシュを計算し直す。チェーンにつながっていれば latestHash とも照合する
 const REGISTRY_ABI = ['function latestHash(bytes32) view returns (bytes32)']
 export async function verifyItem(events) {

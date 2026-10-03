@@ -1,6 +1,6 @@
 // 画面で使うデータの組み立てと、改ざん検証のフック（管理画面・消費者画面で共通）
 import { useState, useEffect } from 'react'
-import { verifyItem } from './api.js'
+import { verifyItem, verifyPhotos, photoUrl } from './api.js'
 
 // 日付は日本時間で表示する
 export const ymd = (s) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date(s))
@@ -35,6 +35,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
     out[r.id] = {
       id: r.id, parent: r.parent_id, kind: r.kind === 'individual' ? 'ind' : 'prod', name: r.name, kg: Number(r.weight_kg),
       species: r.species, productId: r.product_id, qr: r.qr_status, attrs, children: [], rawEvents: evs, row: r, snap,
+      photos: evs.filter((e) => e.payload?.photo?.path).map((e) => ({ id: e.id, url: photoUrl(e.payload.photo.path), type: e.type, at: e.created_at })),
       info: {
         createdAt: r.created_at, landedAt: r.landed_at, port: r.landing_port, catchArea: r.catch_area, period: landing?.payload?.period || null,
         shipName: (snap?.ship ?? ship[r.ship_id])?.name ?? null, gear: (snap?.ship ?? ship[r.ship_id])?.gear ?? null, maker: biz[r.created_by]?.name ?? null,
@@ -64,9 +65,9 @@ export function snapshotDiff(it) {
 
 // 指紋の鎖の検証 ＋ 写しとの照合
 export async function verifyFull(it) {
-  const r = await verifyItem(it.rawEvents)
+  const [r, photos] = await Promise.all([verifyItem(it.rawEvents), verifyPhotos(it.rawEvents)])
   const diff = snapshotDiff(it)
-  return { ...r, ok: r.ok && diff.length === 0, diff }
+  return { ...r, ok: r.ok && diff.length === 0 && photos.ok, diff, photos }
 }
 
 export const ancestors = (items, id) => { const a = []; let c = items[id]; while (c?.parent) { c = items[c.parent]; a.unshift(c) } return a }
@@ -95,7 +96,10 @@ export function useVerifyAll(chain) {
     let alive = true
     setRes(null)
     Promise.all(chain.map((c) => verifyFull(c)))
-      .then((rs) => alive && setRes({ ok: rs.every((r) => r.ok), onchain: rs.every((r) => r.onchain), count: chain.reduce((n, c) => n + c.rawEvents.length, 0) }))
+      .then((rs) => alive && setRes({
+        ok: rs.every((r) => r.ok), onchain: rs.every((r) => r.onchain), count: chain.reduce((n, c) => n + c.rawEvents.length, 0),
+        photoCount: rs.reduce((n, r) => n + (r.photos?.count ?? 0), 0),
+      }))
       .catch(() => alive && setRes({ ok: false, onchain: false }))
     return () => { alive = false }
   }, [key])

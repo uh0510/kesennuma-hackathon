@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react'
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import '@mantine/core/styles.css'
 import '@mantine/notifications/styles.css'
@@ -14,7 +14,7 @@ import {
   IconFish, IconSearch, IconPlus, IconCut, IconQrcode, IconShieldCheck, IconSailboat, IconAnchor, IconGavel,
   IconPackage, IconTruck, IconSnowflake, IconPencil, IconCornerDownRight, IconUserSearch, IconDatabase,
   IconAlertTriangle, IconTag, IconLogin, IconLogout, IconLink, IconChevronRight, IconChevronLeft, IconUserCircle,
-  IconList, IconCircleCheckFilled, IconLock,
+  IconList, IconCircleCheckFilled, IconLock, IconCamera,
 } from '@tabler/icons-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
@@ -23,6 +23,7 @@ import {
   registerIndividual, appendEvent, processItem, activateQr, verifyItem,
 } from './api.js'
 import { checkWeight, childIds } from './lib/rules.js'
+import { compressImage } from './lib/photo.js'
 import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify } from './model.js'
 import { ConsumerView } from './consumer.jsx'
 
@@ -190,6 +191,47 @@ function Overview({ items, dark = false }) {
   )
 }
 
+// 写真を撮る・選ぶ（スマホではカメラが開く）。送る前に小さくする
+function PhotoPicker({ value, onChange, label = '写真', hint }) {
+  const input = useRef(null)
+  const [busy, setBusy] = useState(false)
+  const pick = async (file) => {
+    if (!file) return
+    setBusy(true)
+    try { onChange(await compressImage(file)) } catch (e) { errMsg(e) } finally { setBusy(false) }
+  }
+  return (
+    <div>
+      <Text className="field-label">{label} <Text span size="xs" c="dimmed" fw={400}>（任意）</Text></Text>
+      <input ref={input} type="file" accept="image/*" capture="environment" hidden
+        onChange={(e) => { pick(e.target.files?.[0]); e.target.value = '' }} />
+      {value
+        ? (
+          <div className="photo-preview">
+            <img src={value.dataUrl} alt="撮った写真" />
+            <Group gap="xs" className="photo-preview-actions">
+              <Button size="xs" variant="white" leftSection={<IconCamera size={14} />} onClick={() => input.current.click()}>撮り直す</Button>
+              <Button size="xs" variant="white" color="red" onClick={() => onChange(null)}>外す</Button>
+            </Group>
+          </div>
+        )
+        : (
+          <UnstyledButton className="photo-drop" onClick={() => input.current.click()} disabled={busy}>
+            {busy ? <Loader size="sm" /> : (
+              <>
+                <Center w={44} h={44} style={{ borderRadius: 14, background: 'rgba(0, 113, 227, 0.1)' }}><IconCamera size={24} color="var(--apple-accent)" /></Center>
+                <div>
+                  <Text size="sm" fw={600}>写真を撮る・選ぶ</Text>
+                  <Text size="xs" c="dimmed">{hint ?? '写真の指紋も記録に残すので、あとから差し替えられません'}</Text>
+                </div>
+              </>
+            )}
+          </UnstyledButton>
+        )}
+    </div>
+  )
+}
+
 // 発行されるラベルの見本
 function LabelPreview({ itemId, species, kg, shipName }) {
   return (
@@ -288,6 +330,9 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack })
   useEffect(() => setTab('info'), [it.id])
   const anc = ancestors(items, it.id)
   const root = rootOf(items, it.id)
+  // 写真：自分の写真がなければ、元の1尾の写真を引き継いで出す
+  const bandPhoto = it.photos.at(-1) ?? root.photos[0] ?? null
+  const chainPhotos = [...anc, it].flatMap((c) => c.photos.map((p) => ({ ...p, owner: c })))
   const activate = () => guard(() => run(() => activateQr(it.id), () => notifications.show({ title: 'QRを有効にしました', message: 'このQRは2回目の有効化ができません', color: 'green' })))
 
   return (
@@ -296,7 +341,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack })
         <Anchor component="button" onClick={onBack} c="white" fw={500}><Group gap={2}><IconChevronLeft size={20} />個体一覧</Group></Anchor>
       )}
       <Card padding={0} style={{ overflow: 'hidden' }}>
-        <div className="detail-band" style={{ background: itemGrad(it) }}>
+        <div className="detail-band" style={{ background: bandPhoto ? `linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.6)), url("${bandPhoto.url}") center / cover` : itemGrad(it) }}>
           <div className="band-shine" />
           <Group justify="space-between" align="flex-start" wrap="nowrap" gap="lg" style={{ position: 'relative' }}>
             <Stack gap={8} style={{ minWidth: 0, flex: 1 }}>
@@ -333,6 +378,20 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack })
 
       <SegmentedControl fullWidth value={tab} onChange={setTab} size="md"
         data={[{ value: 'info', label: '紐づく情報' }, { value: 'log', label: `履歴 ${it.events.length}` }, { value: 'tree', label: '親子関係' }]} />
+
+      {tab === 'info' && chainPhotos.length > 0 && (
+        <div>
+          <Text className="section-label">写真（元の1尾から引き継ぎ）</Text>
+          <div className="photo-strip">
+            {chainPhotos.map((p) => (
+              <a key={p.id} href={p.url} target="_blank" rel="noreferrer" className="photo-thumb">
+                <img src={p.url} alt={p.owner.name} loading="lazy" />
+                <span>{p.owner.kind === 'ind' ? '水揚げ時' : p.owner.name} · {ymd(p.at)}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tab === 'info' && (
         <SimpleGrid cols={{ base: 1, md: it.kind === 'prod' ? 2 : 1 }} spacing="lg">
@@ -444,7 +503,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
         onSave={(f) => run(() => registerIndividual(f), () => { pick(f.itemId); notifications.show({ title: '個体IDを発行しました', message: f.itemId, color: 'green' }) })} />
       {it && <>
         <AddInfoModal opened={modal === 'add'} onClose={() => setModal(null)} item={it} busy={busy}
-          onSave={(type, detail) => run(() => appendEvent(it.id, type, detail), (r) => notifications.show({ title: '追記しました', message: r.txHash ? 'チェーンに指紋を残しました' : `${it.id} に記録を追加しました`, color: 'green' }))} />
+          onSave={(type, detail, photo) => run(() => appendEvent(it.id, type, detail, photo), (r) => notifications.show({ title: '追記しました', message: r.txHash ? 'チェーンに指紋を残しました' : `${it.id} に記録を追加しました`, color: 'green' }))} />
         <ProcessModal key={it.id + (modal === 'process')} opened={modal === 'process'} onClose={() => setModal(null)} item={it} items={items} products={db.products} busy={busy}
           onSave={(f) => run(() => processItem({ parent: it, ...f }), () => notifications.show({ title: '子IDを発行しました', message: `${f.childIds.length}件の加工品に親ID ${it.id} を紐づけました`, color: 'green' }))} />
       </>}
@@ -455,6 +514,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
 function AddInfoModal({ opened, onClose, item, busy, onSave }) {
   const [type, setType] = useState('storage')
   const [detail, setDetail] = useState('')
+  const [photo, setPhoto] = useState(null)
   return (
     <Sheet opened={opened} onClose={onClose} title="情報を追記">
       <Stack>
@@ -462,8 +522,9 @@ function AddInfoModal({ opened, onClose, item, busy, onSave }) {
         <Select label="記録の種類" value={type} onChange={setType} allowDeselect={false}
           data={[{ value: 'auction', label: 'せり結果' }, { value: 'storage', label: '冷凍・保管' }, { value: 'ship', label: '出荷' }, { value: 'fix', label: '訂正（前の記録を正す）' }]} />
         <TextInput label="内容" placeholder="例：冷凍庫Bへ移動、−50℃" value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
+        <PhotoPicker value={photo} onChange={setPhoto} />
         <Text size="sm" c="dimmed">保存すると、この記録は消せません。記録する事業者はログイン中の事業者になります。</Text>
-        <Group justify="flex-end" mt="sm"><Button variant="default" onClick={onClose}>やめる</Button><Button disabled={!detail} loading={busy} onClick={() => { onSave(type, detail); setDetail('') }}>追記する</Button></Group>
+        <Group justify="flex-end" mt="sm"><Button variant="default" onClick={onClose}>やめる</Button><Button disabled={!detail} loading={busy} onClick={() => { onSave(type, detail, photo); setDetail(''); setPhoto(null) }}>追記する</Button></Group>
       </Stack>
     </Sheet>
   )
@@ -475,6 +536,7 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
   const [customName, setCustomName] = useState(`${item.name} 加工品`)
   const [count, setCount] = useState(item.kind === 'ind' ? 4 : 2)
   const [w, setW] = useState(item.kind === 'ind' ? 20 : 0.4)
+  const [photo, setPhoto] = useState(null)
   const product = choices.find((p) => p.id === productId)
   const n = Number(count) || 0
   const weights = Array.from({ length: n }, () => Number(w) || 0)
@@ -525,11 +587,12 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
         {check.issues.map((i) => (
           <Alert key={i.message} radius="md" color={i.level === 'error' ? 'red' : i.level === 'warning' ? 'yellow' : 'apple'} variant="light" icon={<IconAlertTriangle size={18} />}>{i.message}</Alert>
         ))}
+        <PhotoPicker value={photo} onChange={setPhoto} label="加工品の写真" hint="撮らなくても、元の1尾の写真が消費者の画面に出ます" />
         <Text size="sm" c="dimmed">子ID {n}件（{ids[0]} …）を発行し、すべてに親IDを持たせます。漁船・海域などは親から自動で引き継ぎます。</Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button leftSection={<IconCut size={18} />} loading={busy} disabled={!check.ok || n < 1 || !name}
-            onClick={() => onSave({ childIds: ids, productId: product?.id ?? null, name, weights })}>{n}件を発行</Button>
+            onClick={() => onSave({ childIds: ids, productId: product?.id ?? null, name, weights, photo })}>{n}件を発行</Button>
         </Group>
       </Stack>
     </Sheet>
@@ -542,6 +605,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   const [area, setArea] = useState(AREAS[0])
   const [period, setPeriod] = useState('')
   const [kg, setKg] = useState(110)
+  const [photo, setPhoto] = useState(null)
   const ship = ships.find((s) => s.id === (shipId ?? ships[0]?.id))
   // ID：KSN-魚種コード-水揚げ日(YYMMDD)-連番
   const today = new Date().toISOString()
@@ -589,11 +653,12 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         <BigNumber label="重量" value={kg} onChange={setKg} unit="kg" steps={[1, 10]} min={0.1} />
         <TextInput label="漁獲期間" placeholder="例：9/20〜10/1" value={period} onChange={(e) => setPeriod(e.currentTarget.value)}
           styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
+        <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真" hint="消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます" />
         <LabelPreview itemId={itemId} species={species} kg={kg} shipName={ship?.name} />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!ship || !(Number(kg) > 0)} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, weightKg: Number(kg), shipId: ship.id, catchArea: area, period, landedAt: today })}>個体IDを発行</Button>
+            onClick={() => onSave({ itemId, species, weightKg: Number(kg), shipId: ship.id, catchArea: area, period, landedAt: today, photo })}>個体IDを発行</Button>
         </Group>
       </Stack>
     </Sheet>

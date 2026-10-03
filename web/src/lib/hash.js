@@ -12,6 +12,12 @@ export async function sha256Hex(text) {
   return '0x' + [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+// 写真などのバイト列の SHA-256（Edge Function と同じ 0x 付きの16進数）
+export async function sha256HexBytes(buf) {
+  const digest = await crypto.subtle.digest('SHA-256', buf)
+  return '0x' + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 // 1件の記録のハッシュ：前の記録のハッシュも含めるので、途中の1件を書き換えると以降がすべて合わなくなる
 export async function eventHash({ itemId, type, actor, payload, prevHash, createdAt }) {
   return sha256Hex(canonical({ itemId, type, actor, payload, prevHash: prevHash ?? null, createdAt }))

@@ -41,6 +41,20 @@
 .scroll-hint { margin-top: 20px; color: var(--fg-3); font-size: 20px; animation: hint 2s ease-in-out infinite; }
 @keyframes hint { 0%, 100% { transform: translateY(0); opacity: 0.5 } 50% { transform: translateY(6px); opacity: 1 } }
 
+/* 表紙の写真 */
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.95fr); gap: 48px; align-items: center; }
+.hero-grid .hero-photo { order: 2; }
+.hero-photo { position: relative; margin: 0; }
+.hero-photo > img {
+  display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 26px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 120px rgba(10, 132, 255, 0.25);
+}
+.hero-photo figcaption { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 12px; font-size: 12px; color: var(--fg-2); }
+.photo-ok { padding: 3px 10px; border-radius: 99px; background: rgba(48, 209, 88, 0.16); color: #30d158; font-weight: 600; }
+.hero-photo-sub { position: absolute; left: -18px; bottom: 36px; width: 34%; border-radius: 16px; overflow: hidden; border: 3px solid #000; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); }
+.hero-photo-sub img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+.hero-photo-sub span { position: absolute; left: 8px; bottom: 6px; font-size: 11px; font-weight: 600; color: #fff; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); }
+
 /* 地図 */
 .map-section { position: relative; }
 .map-caption { position: absolute; z-index: 2; top: 28px; left: 0; right: 0; max-width: 1080px; margin: 0 auto; padding: 0 24px; pointer-events: none; }
@@ -138,6 +152,10 @@ body:has(.dark-shell) { background: #000; }
 @media (max-width: 47.99em) {
   .story-hero { padding: 28px 20px 28px; }
   .story-hero > .demo-picker { position: static; width: 100%; margin-bottom: 28px; }
+  .hero-grid { grid-template-columns: 1fr; gap: 20px; }
+  .hero-grid .hero-photo { order: 0; }
+  .hero-photo > img { border-radius: 20px; aspect-ratio: 16 / 11; }
+  .hero-photo-sub { left: auto; right: 10px; bottom: 44px; width: 30%; }
   .hero-stats { gap: 10px; margin-top: 22px; }
   .seal { padding: 12px 14px; gap: 12px; }
   .seal-title { font-size: 15px; }

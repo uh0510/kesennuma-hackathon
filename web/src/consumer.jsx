@@ -91,6 +91,26 @@ function Seal({ verify }) {
   )
 }
 
+// 表紙の写真（元の1尾）。写真の指紋が記録と一致したら印を出す
+function HeroPhoto({ main, sub, root, it, verify }) {
+  const isRootPhoto = root.photos[0] === main
+  return (
+    <motion.figure className="hero-photo" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.9, ease, delay: 0.15 }}>
+      <img src={main.url} alt={`${root.species}の水揚げ時の写真`} />
+      <figcaption>
+        <span>{isRootPhoto ? '水揚げ時の、この魚の元の姿' : it.name} · {ymd(main.at)}</span>
+        {verify?.ok && verify.photoCount > 0 && <span className="photo-ok">写真も記録と一致</span>}
+      </figcaption>
+      {sub && (
+        <motion.div className="hero-photo-sub" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.6, ease }}>
+          <img src={sub.url} alt={`${it.name}の写真`} />
+          <span>加工後</span>
+        </motion.div>
+      )}
+    </motion.figure>
+  )
+}
+
 // 旅の地図：海域 → 気仙沼港 → 加工場。画面に入ったら線が伸びていく
 function JourneyMap({ stops }) {
   const box = useRef(null)
@@ -264,6 +284,9 @@ function Story({ items, cur, all, setSel, demo }) {
     return list
   }, [chain])
 
+  // 写真：元の1尾の写真を主役に。加工品に自分の写真があれば小さく重ねる
+  const heroPhoto = root.photos[0] ?? it.photos.at(-1) ?? null
+  const ownPhoto = it !== root && it.photos.length && it.photos.at(-1) !== heroPhoto ? it.photos.at(-1) : null
   const days = Math.max(0, Math.round((Date.now() - new Date(root.info.landedAt ?? root.info.createdAt)) / 86400000))
   const allEvents = chain.flatMap((c) => c.events.map((e) => ({ ...e, item: c }))).sort((a, b) => a.id - b.id)
 
@@ -278,6 +301,9 @@ function Story({ items, cur, all, setSel, demo }) {
               data={all.map((p) => ({ value: p.id, label: `${p.name}（${p.id}）` }))} />
           </div>
         )}
+        <div className={heroPhoto ? 'hero-grid' : undefined}>
+        {heroPhoto && <HeroPhoto main={heroPhoto} sub={ownPhoto} root={root} it={it} verify={verify} />}
+        <div className="hero-text">
         <motion.div className="eyebrow-dark" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease }}>KESENNUMA TRACEABILITY · この魚の履歴書</motion.div>
         <motion.h1 className="story-h1" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, ease, delay: 0.1 }}>{it.name}</motion.h1>
         <motion.p className="story-meta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.25 }}>
@@ -288,6 +314,8 @@ function Story({ items, cur, all, setSel, demo }) {
           <div><b><CountUp value={distance} suffix=" km" /></b><span className="stat-label">海から港までの旅</span></div>
           <div><b><CountUp value={days} suffix=" 日" /></b><span className="stat-label">水揚げから</span></div>
           <div><b><CountUp value={allEvents.length} suffix=" 件" /></b><span className="stat-label">ここまでの記録</span></div>
+        </div>
+        </div>
         </div>
       </section>
 

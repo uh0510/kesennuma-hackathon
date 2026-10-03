@@ -1,6 +1,7 @@
 // Supabase Edge Function：追記を受け取り、ハッシュを計算してDBに保存し、チェーンに記録する
 // 呼び出し：POST /functions/v1/record-event
-//   { itemId, type, payload, parentId?, newItem? }   ※ Authorization ヘッダにログイン中のユーザーのトークン
+//   { itemId, type, payload, parentId?, newItem?, photo? }   ※ Authorization ヘッダにログイン中のユーザーのトークン
+//   photo = { base64, mediaType }。Storage（photos バケット）に保存し、写真の指紋を payload.photo に入れて記録の指紋に含める
 // 秘密情報（Supabase の secrets に登録）：
 //   AMOY_RPC_URL, REGISTRY_ADDRESS, ISSUER_KEYS = {"<business_id>":"0x<private key>", ...}
 //   REGISTRY_ADDRESS が未設定のあいだはチェーン記録を飛ばす（DBだけで動かす。tx_hash は空のまま）
@@ -50,6 +51,24 @@ function pickNewItem(newItem: Record<string, unknown>, type: string, parentId: s
   throw new Error('個体は landing、加工品は born（親IDつき）で発行してください')
 }
 
+// 写真を保存し、写真そのものの指紋（SHA-256）を返す。写真を差し替えると指紋が合わなくなる
+const PHOTO_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }
+const PHOTO_MAX = 4 * 1024 * 1024
+// deno-lint-ignore no-explicit-any
+async function savePhoto(supa: any, itemId: string, photo: { base64?: string; mediaType?: string }) {
+  const type = photo.mediaType ?? 'image/jpeg'
+  if (!PHOTO_TYPES[type]) throw new Error('写真は JPEG / PNG / WebP にしてください')
+  if (!photo.base64) throw new Error('写真のデータがありません')
+  const bytes = Uint8Array.from(atob(photo.base64), (c) => c.charCodeAt(0))
+  if (bytes.length > PHOTO_MAX) throw new Error('写真が大きすぎます（4MBまで）')
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  const sha256 = '0x' + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const path = `${itemId}/${sha256.slice(2, 18)}.${PHOTO_TYPES[type]}`
+  const { error } = await supa.storage.from('photos').upload(path, bytes, { contentType: type, upsert: true })
+  if (error) throw error
+  return { path, sha256, type }
+}
+
 // 登録した瞬間の値（マスタの値を含む）を写し取る
 // deno-lint-ignore no-explicit-any
 async function snapshot(supa: any, row: Record<string, unknown>, parentId: string | null) {
@@ -71,7 +90,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
-    const { itemId, type, payload = {}, parentId = null, newItem = null } = await req.json()
+    const { itemId, type, payload = {}, parentId = null, newItem = null, photo = null } = await req.json()
     const supa = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
     // 呼び出した人の事業者を特定
@@ -88,15 +107,19 @@ Deno.serve(async (req) => {
       if (error) throw error
     }
 
-    // 新しいID（個体 or 加工品）の作成。写しは指紋に含める
-    // 写し（item）はサーバーが作ったものだけ。画面から送られてきたものは捨てる
-    const { item: _ignored, ...rest } = payload
+    // 写し（item）と写真の指紋（photo）はサーバーが作ったものだけ。画面から送られてきたものは捨てる
+    const { item: _item, photo: _photo, ...rest } = payload
     let body: Record<string, unknown> = rest
-    if (newItem) {
-      const row = pickNewItem(newItem, type, parentId)
+
+    // 発行する項目を先に確かめ、写真を保存してから items を作る（途中で失敗しても items だけが残らないように）
+    const row = newItem ? pickNewItem(newItem, type, parentId) : null
+    if (photo) body = { ...body, photo: await savePhoto(supa, itemId, photo) }
+
+    // 新しいID（個体 or 加工品）の作成。写しは指紋に含める
+    if (row) {
       const { error } = await supa.from('items').insert({ ...row, id: itemId, parent_id: parentId, created_by: actor })
       if (error) throw error
-      body = { ...rest, item: await snapshot(supa, row, parentId) }
+      body = { ...body, item: await snapshot(supa, row, parentId) }
     }
 
     // 直前の記録のハッシュ
