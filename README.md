@@ -51,6 +51,7 @@ npm run deploy:amoy              # Polygon Amoy テストネットに配置。�
 ### 3. DB と Edge Functions（Supabase）
 1. Supabase でプロジェクトを作成
 2. SQL Editor で `supabase/schema.sql` → `supabase/seed.sql` の順に実行（seed の最後はログインユーザーを作ってから）
+   - 作成済みの DB には、`supabase/migrations/` の SQL を番号順に実行して追いつかせる（schema.sql には反映済み）
 3. Supabase CLI で関数を配置
 ```
 supabase functions deploy record-event
