@@ -32,3 +32,13 @@ venv/
 
 # ログ
 *.log
+
+# Hardhat
+contracts/artifacts/
+contracts/cache/
+
+# Supabase CLI
+supabase/.temp/
+
+# 計画書・ヒアリング資料（相手先の名前などを書き込むので、一旦 Git に入れない）
+docs/
