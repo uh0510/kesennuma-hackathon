@@ -17,3 +17,12 @@ export function childIds(parentId, isIndividual, existingCount, n) {
   const prefix = isIndividual ? 'P' : 'K'
   return Array.from({ length: n }, (_, i) => `${parentId}-${prefix}${String(existingCount + i + 1).padStart(2, '0')}`)
 }
+
+// 受け取り時の重さの増減：増えた（すり替え・水増しの疑い）／減りすぎ（抜き取りの疑い）
+// 許容値は仮（ヒアリングで加工業者に確かめて製品ごとに決める）
+export function weightDrift({ prevKg, kg, maxLoss = 0.08, maxGain = 0.005 }) {
+  const ratio = (kg - prevKg) / prevKg
+  if (ratio > maxGain) return { level: 'gain', ratio }
+  if (-ratio > maxLoss) return { level: 'loss', ratio }
+  return { level: 'ok', ratio }
+}

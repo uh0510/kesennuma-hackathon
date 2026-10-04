@@ -59,6 +59,8 @@ create table items (
   landed_at   timestamptz,                      -- 個体のみ
   landing_port text default '気仙沼港',
   qr_status   text not null default 'issued' check (qr_status in ('issued','active')),
+  quantity    int not null default 1 check (quantity > 0),          -- ロットのパック数（個体は 1）
+  unit_kg     numeric(10,3) check (unit_kg is null or unit_kg > 0), -- 1パックの重さ（weight_kg はロットの総重量）
   created_by  uuid not null references businesses(id),
   created_at  timestamptz not null default now(),
   check ((kind = 'individual' and parent_id is null) or (kind = 'product' and parent_id is not null))
@@ -69,7 +71,7 @@ create index on items(parent_id);
 create table events (
   id          bigserial primary key,
   item_id     text not null references items(id),
-  type        text not null check (type in ('catch','landing','auction','storage','process','born','ship','fix','activate')),
+  type        text not null check (type in ('catch','landing','auction','storage','process','born','ship','fix','activate','receive','sell')),
   actor       uuid not null references businesses(id),
   payload     jsonb not null default '{}'::jsonb,   -- 海域・買受人・加工内容など
   prev_hash   text,                                 -- 同じ item の直前の記録の hash
@@ -105,10 +107,10 @@ begin
     raise exception 'items は削除できません（訂正は fix として追記してください）';
   end if;
   if (new.id, new.kind, new.parent_id, new.species, new.name, new.weight_kg, new.ship_id, new.product_id,
-      new.catch_area, new.landed_at, new.landing_port, new.created_by, new.created_at)
+      new.catch_area, new.landed_at, new.landing_port, new.created_by, new.created_at, new.quantity, new.unit_kg)
      is distinct from
      (old.id, old.kind, old.parent_id, old.species, old.name, old.weight_kg, old.ship_id, old.product_id,
-      old.catch_area, old.landed_at, old.landing_port, old.created_by, old.created_at) then
+      old.catch_area, old.landed_at, old.landing_port, old.created_by, old.created_at, old.quantity, old.unit_kg) then
     raise exception 'items の内容は書き換えできません（QRの有効化のみ可）';
   end if;
   if old.qr_status = 'active' and new.qr_status is distinct from 'active' then

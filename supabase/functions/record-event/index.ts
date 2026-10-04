@@ -4,6 +4,8 @@
 //   photo = { base64, mediaType }。Storage（photos バケット）に保存し、写真の指紋を payload.photo に入れて記録の指紋に含める
 //   location = { lat, lng, accuracy }（記録した場所）。その時点の事業者の登録住所の座標と距離を添えて payload.location に入れる
 // 加工品（born）の魚種は、画面から送られた値ではなく親の魚種を使う（途中で魚種を書き換えられないように）
+// 受け渡しの鎖：せり・出荷で payload.toId に渡す相手を指定 → 相手が receive すると持ち主が移る。
+//   加工・せり・出荷・保管・QR有効化・販売開始は今の持ち主だけ。受け取りは指定された相手だけ。それ以外は拒否する
 // 秘密情報（Supabase の secrets に登録）：
 //   CHAIN_RPC_URL（旧 AMOY_RPC_URL）, REGISTRY_ADDRESS, ISSUER_KEYS = {"<business_id>":"0x<private key>", ...}
 //   REGISTRY_ADDRESS が未設定のあいだはチェーン記録を飛ばす（DBだけで動かす。tx_hash は空のまま）
@@ -49,7 +51,14 @@ function pickNewItem(newItem: Record<string, unknown>, type: string, parentId: s
     }
   }
   if (type === 'born' && newItem.kind === 'product' && parentId) {
-    return { kind: 'product', species: newItem.species, name: newItem.name, weight_kg: Number(newItem.weight_kg), product_id: n(newItem.product_id) }
+    // ロット：quantity＝パック数、unit_kg＝1パックの重さ。総重量はサーバーで計算する（食い違いを作らない）
+    const quantity = Math.trunc(Number(newItem.quantity ?? 1))
+    const unit = Number(newItem.unit_kg ?? newItem.weight_kg)
+    if (!(quantity >= 1 && quantity <= 100000) || !(unit > 0)) throw new Error('パック数と1パックの重さを正しく入れてください')
+    return {
+      kind: 'product', species: newItem.species, name: newItem.name, product_id: n(newItem.product_id),
+      quantity, unit_kg: Math.round(unit * 1000) / 1000, weight_kg: Math.round(quantity * unit * 100) / 100,
+    }
   }
   throw new Error('個体は landing、加工品は born（親IDつき）で発行してください')
 }
@@ -86,6 +95,28 @@ async function sendWithRetry(wallet: ethers.Wallet, send: (nonce: number) => Pro
     }
   }
 }
+
+// 今の持ち主と、引き渡し中の相手を記録の並びから割り出す
+// deno-lint-ignore no-explicit-any
+async function custody(supa: any, itemId: string) {
+  const { data: evs } = await supa.from('events').select('type, actor, payload').eq('item_id', itemId).order('id')
+  let holder: string | null = null, pending: string | null = null, lastKg: number | null = null
+  const actors = new Set<string>()
+  for (const e of evs ?? []) {
+    actors.add(e.actor)
+    const kg = Number(e.payload?.weight_kg)
+    if (Number.isFinite(kg) && kg > 0) lastKg = kg
+    if (e.type === 'landing' || e.type === 'born') { holder = e.actor; pending = null }
+    else if ((e.type === 'auction' || e.type === 'ship') && e.payload?.to?.id) pending = e.payload.to.id
+    else if (e.type === 'receive') { holder = e.actor; pending = null }
+  }
+  return { holder, pending, lastKg, actors }
+}
+
+// deno-lint-ignore no-explicit-any
+const bizName = async (supa: any, id: string | null) => (id ? (await supa.from('businesses').select('name').eq('id', id).maybeSingle()).data?.name ?? id : '不明')
+
+const HOLDER_ONLY = ['process', 'auction', 'ship', 'storage', 'activate', 'sell']
 
 // 2点間の距離（m）
 function distanceM(lat1: number, lng1: number, lat2: number, lng2: number) {
@@ -128,7 +159,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
   const { data: product } = row.product_id
     ? await supa.from('products').select('name, storage, shelf_days').eq('id', row.product_id).single()
     : { data: null }
-  return { kind: 'product', species: row.species, name: row.name, weight_kg: row.weight_kg, parent_id: parentId, product }
+  return { kind: 'product', species: row.species, name: row.name, weight_kg: row.weight_kg, quantity: row.quantity, unit_kg: row.unit_kg, parent_id: parentId, product }
 }
 
 Deno.serve(async (req) => {
@@ -145,6 +176,46 @@ Deno.serve(async (req) => {
     if (!member) return json({ ok: false, error: 'このユーザーはどの事業者にも所属していません' }, 403)
     const actor = member.business_id as string
 
+    // 水揚げ（個体IDの発行）は市場だけ
+    if (type === 'landing') {
+      const { data: me } = await supa.from('businesses').select('role').eq('id', actor).maybeSingle()
+      if (me?.role !== 'market') throw new Error('水揚げの登録（個体IDの発行）は市場だけができます')
+    }
+
+    // 受け渡しの鎖の確認（持ち主以外・指定外の相手は拒否）
+    const extra: Record<string, unknown> = {}
+    if (type === 'born') {
+      const c = await custody(supa, parentId)
+      if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。加工できるのは持ち主だけです`)
+      if (c.pending) throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで加工できません`)
+    } else if (type !== 'landing') {
+      const c = await custody(supa, itemId)
+      if (type === 'receive') {
+        if (!c.pending) throw new Error('この魚は引き渡し中ではありません（先に、渡す側がせり・出荷で相手を指定します）')
+        if (c.pending !== actor) throw new Error(`この魚の受け取り先は ${await bizName(supa, c.pending)} です。ほかの事業者は受け取れません`)
+        extra.from = { id: c.holder, name: await bizName(supa, c.holder) }
+        // 重さ：前回わかっている重さとの差（増えた・減りすぎは画面で判定する）
+        const kg = Number(payload.weight_kg)
+        if (Number.isFinite(kg) && kg > 0 && c.lastKg) extra.weight_check = { prev_kg: c.lastKg, kg, diff_kg: Math.round((kg - c.lastKg) * 100) / 100 }
+      } else if (HOLDER_ONLY.includes(type)) {
+        if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。記録できるのは持ち主だけです`)
+        // 加工済み（子IDがある）の親は、切り分けたあとなので丸ごとは渡せない・売れない。加工品ごとに記録する
+        if (type === 'auction' || type === 'ship' || type === 'sell') {
+          const { data: kids } = await supa.from('items').select('id').eq('parent_id', itemId).limit(1)
+          if (kids?.length) throw new Error('この魚は加工済みです。引き渡し・販売は加工品ごとに記録してください')
+        }
+        if (c.pending && type !== 'auction' && type !== 'ship') throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで記録できません`)
+        if ((type === 'auction' || type === 'ship') && payload.toId) {
+          if (payload.toId === actor) throw new Error('自分自身には引き渡せません')
+          const { data: to } = await supa.from('businesses').select('id, name').eq('id', payload.toId).maybeSingle()
+          if (!to) throw new Error('渡す相手の事業者が見つかりません')
+          extra.to = { id: to.id, name: to.name }
+        }
+      } else if (type === 'fix') {
+        if (!c.actors.has(actor)) throw new Error('訂正できるのは、この魚を記録したことのある事業者だけです')
+      }
+    }
+
     // QRの有効化（2回目はここでエラーになり、記録も残らない）
     if (type === 'activate') {
       const { error } = await supa.rpc('activate_qr', { p_item: itemId })
@@ -152,8 +223,8 @@ Deno.serve(async (req) => {
     }
 
     // 写し（item）・写真の指紋（photo）・場所（location）はサーバーが作ったものだけ。画面から payload で送られてきたものは捨てる
-    const { item: _item, photo: _photo, location: _location, ...rest } = payload
-    let body: Record<string, unknown> = rest
+    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, ...rest } = payload
+    let body: Record<string, unknown> = { ...rest, ...extra }
 
     // 発行する項目を先に確かめ、写真を保存してから items を作る（途中で失敗しても items だけが残らないように）
     const row = newItem ? pickNewItem(newItem, type, parentId) : null

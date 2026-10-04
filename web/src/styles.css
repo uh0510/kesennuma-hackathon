@@ -180,3 +180,13 @@ body::before {
 .geo-status { padding: 8px 12px; border-radius: 12px; background: rgba(0, 113, 227, 0.06); color: var(--apple-text-2); }
 .geo-status[data-state='ok'] { background: rgba(52, 199, 89, 0.1); color: #1d7a3a; }
 .geo-status[data-state='ng'] { background: rgba(255, 159, 10, 0.12); color: #8a5300; }
+
+/* 今の持ち主・引き渡し中 */
+.custody-bar { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; padding: 10px 14px; margin-bottom: 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.03); }
+.custody-pending { color: #8a5300; }
+.custody-note { padding: 10px 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.03); }
+
+/* あなた宛ての受け取り待ち */
+.inbox { padding: 10px; border-radius: 14px; background: rgba(255, 159, 10, 0.1); border: 1px solid rgba(255, 159, 10, 0.3); }
+.inbox-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px; border-radius: 10px; background: rgba(255, 255, 255, 0.7); }
+.inbox-row + .inbox-row { margin-top: 6px; }

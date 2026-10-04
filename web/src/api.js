@@ -50,8 +50,9 @@ const photoBody = (photo) => (photo ? { photo: { base64: photo.base64, mediaType
 
 // ---- 書き込み（record-event） ----
 async function recordEvent(body) {
-  // 記録した場所（取れなければ付けない。Edge Function が登録住所との距離を添えて記録に入れる）
-  const location = await currentPosition()
+  // 記録した場所：受け取り・販売開始のときだけ取る（取れなければ付けない。Edge Function が登録住所との距離を添える）
+  const needLocation = body.type === 'receive' || body.type === 'sell'
+  const location = needLocation ? await currentPosition() : null
   const { data, error } = await supabase.functions.invoke('record-event', { body: location ? { ...body, location } : body })
   if (error) {
     // Edge Function が返したエラー文を取り出す
@@ -59,7 +60,7 @@ async function recordEvent(body) {
     throw new Error(msg ?? error.message)
   }
   if (!data?.ok) throw new Error(data?.error ?? '記録に失敗しました')
-  return { ...data, locationError: location ? null : positionError() }
+  return { ...data, locationError: needLocation && !location ? positionError() : null }
 }
 
 // 水揚げした個体を登録（個体IDを発行し、landing を記録）
@@ -77,16 +78,36 @@ export function appendEvent(itemId, type, detail, photo) {
 }
 
 // 加工して子IDを発行：親に process を記録し、子の数だけ born を記録する
-export async function processItem({ parent, childIds, productId, name, weights, photo }) {
+// lots = [{ id, quantity, unitKg }]：ロットごとにパック数と1パックの重さ（総重量はサーバーが計算）
+export async function processItem({ parent, childIds, productId, name, lots, photo }) {
   let last = await recordEvent({ itemId: parent.id, type: 'process', payload: { detail: `子ID ${childIds.length}件を発行（${name}）`, children: childIds } })
   for (const [i, id] of childIds.entries()) {
     last = await recordEvent({
       itemId: id, parentId: parent.id, type: 'born', ...photoBody(photo),
-      newItem: { kind: 'product', species: parent.species, name, weight_kg: weights[i], product_id: productId ?? null },
-      payload: { detail: `親ID ${parent.id} から発行`, weight_kg: weights[i] },
+      newItem: { kind: 'product', species: parent.species, name, product_id: productId ?? null, quantity: lots[i].quantity, unit_kg: lots[i].unitKg },
+      payload: { detail: lots[i].quantity > 1 ? `親ID ${parent.id} から発行（${lots[i].quantity}パック）` : `親ID ${parent.id} から発行`, weight_kg: Math.round(lots[i].quantity * lots[i].unitKg * 100) / 100 },
     })
   }
   return last
+}
+
+// 引き渡す（せり結果・出荷）：渡す相手の事業者を指定する。相手が受け取ると持ち主が移る
+export function handover({ itemId, kind, toId, detail, weightKg }) {
+  const payload = { detail, toId }
+  if (weightKg) payload.weight_kg = weightKg
+  return recordEvent({ itemId, type: kind, payload })
+}
+
+// 受け取る：指定された相手だけができる。重さと場所を記録する
+export function receiveItem({ itemId, weightKg, detail }) {
+  const payload = { detail: detail || '受け取り' }
+  if (weightKg) payload.weight_kg = weightKg
+  return recordEvent({ itemId, type: 'receive', payload })
+}
+
+// 販売を始める：売場での表示名と場所を記録する
+export function startSale({ itemId, displayName, detail }) {
+  return recordEvent({ itemId, type: 'sell', payload: { detail: detail || `売場の表示：${displayName}`, display_name: displayName } })
 }
 
 // ラベルを貼ってQRを有効化（2回目はエラー）

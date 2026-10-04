@@ -25,3 +25,5 @@ insert into members (user_id, business_id, display_name)
 select id, '00000000-0000-0000-0000-000000000001', '市場（デモ）' from auth.users where email = 'market@example.com';
 insert into members (user_id, business_id, display_name)
 select id, '00000000-0000-0000-0000-000000000002', '加工場（デモ）' from auth.users where email = 'processor@example.com';
+insert into members (user_id, business_id, display_name)
+select id, '00000000-0000-0000-0000-000000000003', '小売（デモ）' from auth.users where email = 'retail@example.com';

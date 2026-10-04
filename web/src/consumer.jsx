@@ -300,6 +300,9 @@ function Story({ items, cur, all, setSel, demo, lang, setLang }) {
       const ev = c.events.find((x) => x.id === e.id)
       if (e.type === 'landing') list.push({ key: e.id, ...EV.landing, title: tr(c.info.port ?? '気仙沼港'), big: c.kg, unit: 'kg', lines: [t.landedOn(ymd(e.created_at)), tr(ev.who)], at: e.created_at })
       else if (e.type === 'born') list.push({ key: e.id, ...EV.born, title: tr(c.name), big: c.kg, unit: 'kg', lines: [tr(ev.who), t.processedOn(ymd(e.created_at)), c.info.storage && t.storage(tr(c.info.storage))].filter(Boolean), at: e.created_at })
+      else if (e.type === 'receive') list.push({ key: e.id, ...EV.receive, title: tr(ev.who), lines: [ev.from && t.receivedFrom(tr(ev.from.name)), ev.wc && `${ev.wc.prev_kg} → ${ev.wc.kg} kg`, when(e.created_at)].filter(Boolean), at: e.created_at })
+      else if (e.type === 'sell') list.push({ key: e.id, ...EV.sell, title: tr(ev.who), lines: [e.payload?.display_name && t.displayedAs(e.payload.display_name), when(e.created_at)].filter(Boolean), at: e.created_at })
+      else if (ev.to) list.push({ key: e.id, ...EV[e.type], title: t.handedTo(tr(ev.to.name)), lines: [tr(ev.who), when(e.created_at)], at: e.created_at })
       else list.push({ key: e.id, ...EV[e.type], title: ev.detail || (lang === 'en' ? EV[e.type].en : EV[e.type].ja), lines: [tr(ev.who), when(e.created_at)], at: e.created_at })
     }
     if (it.kind === 'prod' && it.info.shelfDays != null) {
@@ -334,7 +337,9 @@ function Story({ items, cur, all, setSel, demo, lang, setLang }) {
         <motion.div className="eyebrow-dark" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease }}>{t.eyebrow}</motion.div>
         <motion.h1 className="story-h1" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, ease, delay: 0.1 }}>{tr(it.name)}</motion.h1>
         <motion.p className="story-meta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.25 }}>
-          {t.meta(it.kg, tr(root.info.shipName), tr(root.species), it.kind === 'prod')}
+          {it.qty > 1 && it.unitKg
+            ? <>{t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, tr(root.info.shipName), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
+            : t.meta(it.kg, tr(root.info.shipName), tr(root.species), it.kind === 'prod')}
         </motion.p>
         <Seal verify={verify} t={t} />
         <div className="hero-stats">

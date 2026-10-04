@@ -29,19 +29,25 @@ export function buildItems({ items, events, ships, products, businesses }) {
       const p = snap?.product ?? prod[r.product_id]
       const made = ymd(r.created_at)
       attrs = [['製品名', r.name], ['加工者', biz[r.created_by]?.name ?? '—'], ['加工日', made], ['重量', `${r.weight_kg} kg`]]
+      if (r.quantity > 1) attrs.push(['数量', `${r.quantity}パック（1パック ${Number(r.unit_kg) * 1000 >= 1000 ? `${Number(r.unit_kg)}kg` : `${Math.round(Number(r.unit_kg) * 1000)}g`}）`])
       if (p?.storage) attrs.push(['保存方法', p.storage])
       if (p?.shelf_days != null) attrs.push([p.shelf_days > 5 ? '賞味期限' : '消費期限', addDays(r.created_at, p.shelf_days)])
     }
     out[r.id] = {
       id: r.id, parent: r.parent_id, kind: r.kind === 'individual' ? 'ind' : 'prod', name: r.name, kg: Number(r.weight_kg),
       species: r.species, productId: r.product_id, qr: r.qr_status, attrs, children: [], rawEvents: evs, row: r, snap,
+      qty: r.quantity ?? 1, unitKg: r.unit_kg != null ? Number(r.unit_kg) : null,
       photos: evs.filter((e) => e.payload?.photo?.path).map((e) => ({ id: e.id, url: photoUrl(e.payload.photo.path), type: e.type, at: e.created_at })),
       info: {
         createdAt: r.created_at, landedAt: r.landed_at, port: r.landing_port, catchArea: r.catch_area, period: landing?.payload?.period || null,
         shipName: (snap?.ship ?? ship[r.ship_id])?.name ?? null, gear: (snap?.ship ?? ship[r.ship_id])?.gear ?? null, maker: biz[r.created_by]?.name ?? null,
         storage: (snap?.product ?? prod[r.product_id])?.storage ?? null, shelfDays: (snap?.product ?? prod[r.product_id])?.shelf_days ?? null,
       },
-      events: evs.map((e) => ({ id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash, loc: e.payload?.location ?? null })),
+      events: evs.map((e) => ({
+        id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash,
+        loc: e.payload?.location ?? null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null,
+      })),
+      custody: custodyOf(evs, biz, Number(r.weight_kg)),
     }
   }
   for (const it of Object.values(out)) if (it.parent && out[it.parent]) out[it.parent].children.push(it.id)
@@ -68,6 +74,19 @@ export async function verifyFull(it) {
   const [r, photos] = await Promise.all([verifyItem(it.rawEvents), verifyPhotos(it.rawEvents)])
   const diff = snapshotDiff(it)
   return { ...r, ok: r.ok && diff.length === 0 && photos.ok, diff, photos }
+}
+
+// 今の持ち主と、引き渡し中の相手（サーバーの確認と同じ決まりで記録の並びから割り出す）
+export function custodyOf(evs, biz, itemKg) {
+  let holder = null, pending = null, lastKg = itemKg
+  for (const e of evs) {
+    const kg = Number(e.payload?.weight_kg)
+    if (Number.isFinite(kg) && kg > 0) lastKg = kg
+    if (e.type === 'landing' || e.type === 'born') { holder = e.actor; pending = null }
+    else if ((e.type === 'auction' || e.type === 'ship') && e.payload?.to?.id) pending = e.payload.to.id
+    else if (e.type === 'receive') { holder = e.actor; pending = null }
+  }
+  return { holder, holderName: biz[holder]?.name ?? null, pending, pendingName: biz[pending]?.name ?? null, lastKg }
 }
 
 export const ancestors = (items, id) => { const a = []; let c = items[id]; while (c?.parent) { c = items[c.parent]; a.unshift(c) } return a }

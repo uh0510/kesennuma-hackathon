@@ -32,7 +32,9 @@ export const STR = {
     photoAlt: (species) => `${species}の水揚げ時の写真`, photoAltOwn: (name) => `${name}の写真`,
     mapTitle: '海から、気仙沼へ。', mapNote: '海域は代表地点です。地図 © OpenFreeMap / OpenStreetMap', mapFallback: 'この端末では地図を表示できませんでした',
     pinCatch: '漁獲', pinApprox: '（代表地点）', unknownArea: '海域不明', pinLanded: '水揚げ', pinLandedProcessed: '水揚げ・加工',
-    pinDid: { landing: '水揚げ', auction: 'せり', storage: '保管', process: '加工', born: '加工', activate: 'ラベル貼付', ship: '出荷' },
+    pinDid: { landing: '水揚げ', auction: 'せり', storage: '保管', process: '加工', born: '加工', activate: 'ラベル貼付', ship: '出荷', receive: '受け取り', sell: '販売' },
+    handedTo: (n) => `${n} へ引き渡し`, receivedFrom: (n) => `${n} から受け取り`, displayedAs: (n) => `売場での表示：${n}`,
+    lotPack: (unit, q) => `${unit} × ${q}パックのロットの1パック`,
     journeyTitle: 'ここまでの、すべての記録。',
     noArea: '海域の記録なし', period: (p) => `漁獲期間 ${p}`, landedOn: (d) => `${d} 水揚げ`, processedOn: (d) => `${d} 加工`,
     storage: (s) => `保存 ${s}`, bestBefore: '賞味期限', useBy: '消費期限', keepAt: (s) => `${s}で保存してください`,
@@ -59,7 +61,9 @@ export const STR = {
     photoAlt: (species) => `${species} at landing`, photoAltOwn: (name) => `Photo of ${name}`,
     mapTitle: 'From the sea to Kesennuma.', mapNote: 'Fishing area shown at a representative point. Map © OpenFreeMap / OpenStreetMap', mapFallback: 'The map cannot be shown on this device',
     pinCatch: 'Caught', pinApprox: ' (approx.)', unknownArea: 'Unknown area', pinLanded: 'Landed', pinLandedProcessed: 'Landed & processed',
-    pinDid: { landing: 'Landed', auction: 'Auction', storage: 'Stored', process: 'Processed', born: 'Processed', activate: 'Labeled', ship: 'Shipped' },
+    pinDid: { landing: 'Landed', auction: 'Auction', storage: 'Stored', process: 'Processed', born: 'Processed', activate: 'Labeled', ship: 'Shipped', receive: 'Received', sell: 'On sale' },
+    handedTo: (n) => `Handed to ${n}`, receivedFrom: (n) => `Received from ${n}`, displayedAs: (n) => `Sold as: ${n}`,
+    lotPack: (unit, q) => `One pack from a lot of ${q} × ${unit}`,
     journeyTitle: 'Every step, on the record.',
     noArea: 'No fishing area recorded', period: (p) => `Fishing period: ${p}`, landedOn: (d) => `Landed ${d}`, processedOn: (d) => `Processed ${d}`,
     storage: (s) => `Storage: ${s}`, bestBefore: 'Best before', useBy: 'Use by', keepAt: (s) => `Keep at ${s}`,
@@ -85,6 +89,8 @@ export const EV_LABEL = {
   born: { en: 'PROCESSED', ja: '加工' },
   ship: { en: 'SHIPPED', ja: '出荷' },
   fix: { en: 'CORRECTED', ja: '訂正' },
+  receive: { en: 'RECEIVED', ja: '受け取り' },
+  sell: { en: 'ON SALE', ja: '販売' },
 }
 
 // 最初の言語：URL の ?lang= → 前回選んだ言語 → 端末の言語（日本語以外なら英語）
