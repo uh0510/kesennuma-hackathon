@@ -98,6 +98,7 @@ export function useVerifyAll(chain) {
     Promise.all(chain.map((c) => verifyFull(c)))
       .then((rs) => alive && setRes({
         ok: rs.every((r) => r.ok), onchain: rs.every((r) => r.onchain), count: chain.reduce((n, c) => n + c.rawEvents.length, 0),
+        chains: rs.map((r) => r.chain),
         photoCount: rs.reduce((n, r) => n + (r.photos?.count ?? 0), 0),
       }))
       .catch(() => alive && setRes({ ok: false, onchain: false }))

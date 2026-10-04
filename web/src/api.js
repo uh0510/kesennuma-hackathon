@@ -7,7 +7,10 @@ import { verifyChain, itemKey, sha256HexBytes } from './lib/hash.js'
 export const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
 
 const REGISTRY = import.meta.env.VITE_REGISTRY_ADDRESS
-const RPC = import.meta.env.VITE_AMOY_RPC_URL
+const RPC = import.meta.env.VITE_CHAIN_RPC_URL ?? import.meta.env.VITE_AMOY_RPC_URL
+// 記録を確認するサイト（エクスプローラー）。テストネットを変えたらここも変える
+const EXPLORER = import.meta.env.VITE_EXPLORER_URL ?? 'https://sepolia.basescan.org'
+export const explorerTx = (tx) => `${EXPLORER}/tx/${tx}`
 export const chainEnabled = Boolean(REGISTRY && /^0x[0-9a-fA-F]{40}$/.test(REGISTRY) && RPC)
 
 // ---- ログイン ----
@@ -103,14 +106,16 @@ export async function verifyPhotos(events) {
 
 // DBの記録からハッシュを計算し直す。チェーンにつながっていれば latestHash とも照合する
 const REGISTRY_ABI = ['function latestHash(bytes32) view returns (bytes32)']
+// chain：'match'＝チェーンと一致 / 'none'＝チェーン未記録（つなぐ前の記録） / 'pending'＝最新の記録がまだチェーンに届いていない
+//        'mismatch'＝チェーンの指紋がどの記録とも合わない（改ざんの疑い） / 'off'＝チェーン未接続
 export async function verifyItem(events) {
-  if (events.length === 0) return { ok: false, onchain: false, reason: '記録がありません' }
-  if (!chainEnabled) {
-    const r = await verifyChain(events, events.at(-1).hash)
-    return { ...r, onchain: false }
-  }
+  if (events.length === 0) return { ok: false, onchain: false, chain: 'off', reason: '記録がありません' }
+  const db = await verifyChain(events, events.at(-1).hash) // DB の中で指紋の鎖がつながっているか
+  if (!chainEnabled) return { ...db, onchain: false, chain: 'off' }
   const reg = new ethers.Contract(REGISTRY, REGISTRY_ABI, new ethers.JsonRpcProvider(RPC))
-  const latest = await reg.latestHash(await itemKey(events[0].item_id))
-  const r = await verifyChain(events, latest)
-  return { ...r, onchain: true }
+  const latest = (await reg.latestHash(await itemKey(events[0].item_id))).toLowerCase()
+  if (latest === ethers.ZeroHash) return { ...db, onchain: false, chain: 'none' }
+  if (latest === events.at(-1).hash.toLowerCase()) return { ...db, onchain: true, chain: 'match' }
+  if (events.some((e) => e.hash.toLowerCase() === latest)) return { ...db, onchain: false, chain: 'pending' }
+  return { ...db, ok: false, onchain: false, chain: 'mismatch' }
 }

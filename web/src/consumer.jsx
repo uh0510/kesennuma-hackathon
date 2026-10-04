@@ -8,6 +8,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
 import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll } from './model.js'
+import { explorerTx } from './api.js'
 
 // 地図に置く地点。海域は正確な漁獲地点ではなく、海域の代表地点（画面にもそう書く）
 const AREA_POINTS = {
@@ -364,7 +365,13 @@ function Story({ items, cur, all, setSel, demo }) {
             <motion.div key="proof" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.4, ease }} style={{ overflow: 'hidden' }}>
               <p className="story-lead">
                 それぞれの記録は、ひとつ前の記録の指紋（ハッシュ）を含んでいます。1件でも書き換えると、それ以降の指紋がすべて合わなくなります。
-                {verify?.onchain ? '指紋はブロックチェーンにも残しているので、記録した事業者自身でもあとから書き換えられません。' : '（この環境はまだブロックチェーンにつないでいません。指紋はデータベースに保存しています）'}
+                {verify?.onchain
+                  ? '指紋はブロックチェーンにも残しているので、記録した事業者自身でもあとから書き換えられません。下のカードの「チェーンで確認」から、ブロックチェーン上の記録を誰でも確かめられます。'
+                  : verify?.chains?.includes('pending')
+                    ? '（最新の記録をブロックチェーンに書き込んでいるところです。数秒〜数十秒で反映されます）'
+                    : verify?.chains?.includes('none')
+                      ? '（この商品にはブロックチェーンにつなぐ前の記録が含まれます。それらの指紋はデータベースだけに保存しています）'
+                      : '（この環境はまだブロックチェーンにつないでいません。指紋はデータベースに保存しています）'}
               </p>
               <div className="hash-chain">
           {allEvents.map((e, i) => (
@@ -373,7 +380,7 @@ function Story({ items, cur, all, setSel, demo }) {
               <div className="hb-time">{e.t}</div>
               <code className="hb-hash">{shortHash(e.hash)}</code>
               {e.tx
-                ? <a className="hb-tx" href={`https://amoy.polygonscan.com/tx/${e.tx}`} target="_blank" rel="noreferrer"><IconLink size={12} /> チェーンで確認</a>
+                ? <a className="hb-tx" href={explorerTx(e.tx)} target="_blank" rel="noreferrer"><IconLink size={12} /> チェーンで確認</a>
                 : <span className="hb-tx muted">チェーン未接続</span>}
             </motion.div>
           ))}

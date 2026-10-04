@@ -3,8 +3,9 @@
 //   { itemId, type, payload, parentId?, newItem?, photo? }   ※ Authorization ヘッダにログイン中のユーザーのトークン
 //   photo = { base64, mediaType }。Storage（photos バケット）に保存し、写真の指紋を payload.photo に入れて記録の指紋に含める
 // 秘密情報（Supabase の secrets に登録）：
-//   AMOY_RPC_URL, REGISTRY_ADDRESS, ISSUER_KEYS = {"<business_id>":"0x<private key>", ...}
+//   CHAIN_RPC_URL（旧 AMOY_RPC_URL）, REGISTRY_ADDRESS, ISSUER_KEYS = {"<business_id>":"0x<private key>", ...}
 //   REGISTRY_ADDRESS が未設定のあいだはチェーン記録を飛ばす（DBだけで動かす。tx_hash は空のまま）
+//   チェーンへの送信に失敗しても DB の記録は残っているので ok:true で返し、chainError に理由を入れる
 // type='activate' はQRの有効化。activate_qr で1回だけ有効にしてから記録を残す
 // 個体・加工品の発行（landing / born）では、そのときの値とマスタの値を payload.item に写し取り、指紋に含める。
 //   → あとでマスタを直しても、この記録の内容と指紋は変わらない。items の値が写しと食い違えば検証で分かる
@@ -67,6 +68,21 @@ async function savePhoto(supa: any, itemId: string, photo: { base64?: string; me
   const { error } = await supa.storage.from('photos').upload(path, bytes, { contentType: type, upsert: true })
   if (error) throw error
   return { path, sha256, type }
+}
+
+// チェーンへ送る。公開 RPC は直前の取引の通し番号（nonce）を知らないことがあるので、ずれたら取り直して送り直す
+// deno-lint-ignore no-explicit-any
+async function sendWithRetry(wallet: ethers.Wallet, send: (nonce: number) => Promise<any>) {
+  let nonce = await wallet.getNonce('pending')
+  for (let i = 0; ; i++) {
+    try {
+      return await send(nonce)
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e)
+      if (i >= 3 || !/nonce|replacement|already known/i.test(msg)) throw e
+      nonce = Math.max(nonce + 1, await wallet.getNonce('pending'))
+    }
+  }
 }
 
 // 登録した瞬間の値（マスタの値を含む）を写し取る
@@ -137,16 +153,24 @@ Deno.serve(async (req) => {
     const registry = Deno.env.get('REGISTRY_ADDRESS')
     if (!registry) return json({ ok: true, eventId: ev.id, hash, txHash: null })
 
-    const keys = JSON.parse(Deno.env.get('ISSUER_KEYS') ?? '{}')
-    if (!keys[actor]) throw new Error(`事業者 ${actor} の署名鍵が ISSUER_KEYS にありません`)
-    const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(Deno.env.get('AMOY_RPC_URL')))
-    const reg = new ethers.Contract(registry, ABI, wallet)
-    const tx = newItem
-      ? await reg.issue(await itemKey(itemId), parentId ? await itemKey(parentId) : ethers.ZeroHash, hash)
-      : await reg.record(await itemKey(itemId), hash)
-    await supa.from('events').update({ tx_hash: tx.hash }).eq('id', ev.id)
-
-    return json({ ok: true, eventId: ev.id, hash, txHash: tx.hash })
+    try {
+      const keys = JSON.parse(Deno.env.get('ISSUER_KEYS') ?? '{}')
+      if (!keys[actor]) throw new Error(`事業者 ${actor} の署名鍵が ISSUER_KEYS にありません`)
+      const rpc = Deno.env.get('CHAIN_RPC_URL') ?? Deno.env.get('AMOY_RPC_URL')
+      const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(rpc))
+      const reg = new ethers.Contract(registry, ABI, wallet)
+      const key = await itemKey(itemId)
+      const parentKey = parentId ? await itemKey(parentId) : ethers.ZeroHash
+      const tx = await sendWithRetry(wallet, (nonce) => (row
+        ? reg.issue(key, parentKey, hash, { nonce })
+        : reg.record(key, hash, { nonce })))
+      await supa.from('events').update({ tx_hash: tx.hash }).eq('id', ev.id)
+      return json({ ok: true, eventId: ev.id, hash, txHash: tx.hash })
+    } catch (e) {
+      // 例：チェーンにつなぐ前に作った個体（チェーン上に存在しない）への追記
+      const reason = String((e as { shortMessage?: string })?.shortMessage ?? (e as Error)?.message ?? e)
+      return json({ ok: true, eventId: ev.id, hash, txHash: null, chainError: reason })
+    }
   } catch (e) {
     return json({ ok: false, error: String(e?.message ?? e) }, 400)
   }

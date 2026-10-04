@@ -43,10 +43,11 @@ npm run build      # dist/index.html 1ファイルにまとまる（ダブルク
 cd contracts
 npm install
 npx hardhat test                 # ローカルでテスト
-cp ../.env.example .env          # AMOY_RPC_URL / DEPLOYER_KEY を入れる
-npm run deploy:amoy              # Polygon Amoy テストネットに配置。表示されたアドレスを控える
+cp ../.env.example .env          # DEPLOYER_KEY / ISSUERS を入れる
+npm run deploy:base-sepolia      # Base Sepolia テストネットに配置。表示されたアドレスを控える
 ```
-テストネット用の POL は各種 faucet から入手します。
+テストネット用の ETH（練習用・無料）は faucet から入手します（例：ZalalenA。本物の暗号資産の残高を求めるサイトは使えない）。
+Polygon Amoy にも配置できる（`npm run deploy:amoy`）が、手数料が高めで練習用の通貨が足りなかったため、プロトタイプは Base Sepolia を使う。
 
 ### 3. DB と Edge Functions（Supabase）
 1. Supabase でプロジェクトを作成
@@ -56,7 +57,7 @@ npm run deploy:amoy              # Polygon Amoy テストネットに配置。�
 ```
 supabase functions deploy record-event
 supabase functions deploy ocr-slip
-supabase secrets set AMOY_RPC_URL=... REGISTRY_ADDRESS=0x... ISSUER_KEYS='{"<business_id>":"0x..."}' ANTHROPIC_API_KEY=... ANTHROPIC_MODEL=...
+supabase secrets set CHAIN_RPC_URL=https://sepolia.base.org REGISTRY_ADDRESS=0x... ISSUER_KEYS='{"<business_id>":"0x..."}'
 ```
 
 ### 4. 公開

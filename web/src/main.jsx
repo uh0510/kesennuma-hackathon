@@ -20,7 +20,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll,
-  registerIndividual, appendEvent, processItem, activateQr, verifyItem,
+  registerIndividual, appendEvent, processItem, activateQr, explorerTx,
 } from './api.js'
 import { checkWeight, childIds } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
@@ -66,6 +66,10 @@ const AREAS = ['北西太平洋（FAO 61）', '三陸沖']
 const MOBILE = '(max-width: 47.99em)'
 
 const qrUrl = (id) => `${location.origin}${location.pathname}?id=${encodeURIComponent(id)}`
+// 記録できたことを知らせる。チェーンへの記録だけ失敗したときは、そのことも伝える
+const notifyRecorded = (title, r) => notifications.show(r?.chainError
+  ? { title, message: `記録は保存しました。ブロックチェーンへの記録はできませんでした（${r.chainError.slice(0, 80)}）`, color: 'yellow', autoClose: 10000 }
+  : { title, message: r?.txHash ? 'ブロックチェーンに指紋を残しました' : '記録を保存しました', color: 'green' })
 const errMsg = (e) => notifications.show({ color: 'red', title: 'できませんでした', message: e.message ?? String(e), autoClose: 8000 })
 const useIsMobile = () => useMediaQuery(MOBILE, false, { getInitialValueInEffect: false })
 
@@ -100,7 +104,8 @@ function VerifyBadge({ item, variant = 'light' }) {
   const r = useVerify(item)
   if (!r) return <Badge variant={variant} color="gray" leftSection={<Loader size={10} />}>照合中</Badge>
   if (!r.ok) return <Badge variant={variant} color="red" leftSection={<IconAlertTriangle size={12} />}>記録が一致しません</Badge>
-  return <Badge variant={variant} color="green" leftSection={<IconShieldCheck size={12} />}>記録 {item.events.length}件・書き換えなし{r.onchain ? '' : '（チェーン未接続）'}</Badge>
+  const chainNote = { match: '・チェーンと一致', none: '（チェーン未記録）', pending: '（チェーンへ記録中）', off: '（チェーン未接続）' }[r.chain] ?? ''
+  return <Badge variant={variant} color="green" leftSection={<IconShieldCheck size={12} />}>記録 {item.events.length}件・書き換えなし{chainNote}</Badge>
 }
 
 // 魚種ごとの色（一覧のアイコンや詳細の帯に使う）
@@ -422,7 +427,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack })
                   {e.detail && <Text size="sm">{e.detail}</Text>}
                   <Group gap="xs" mt={4}>
                     <Text size="xs" c="dimmed">{e.who}</Text><Code fz="xs">{shortHash(e.hash)}</Code>
-                    {e.tx && <Anchor size="xs" href={`https://amoy.polygonscan.com/tx/${e.tx}`} target="_blank"><Group gap={2}><IconLink size={12} />チェーン</Group></Anchor>}
+                    {e.tx && <Anchor size="xs" href={explorerTx(e.tx)} target="_blank"><Group gap={2}><IconLink size={12} />チェーン</Group></Anchor>}
                   </Group>
                 </Timeline.Item>
               )
@@ -500,10 +505,10 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
       </div>
 
       <RegisterModal opened={modal === 'register'} onClose={() => setModal(null)} busy={busy} items={items} ships={db.ships}
-        onSave={(f) => run(() => registerIndividual(f), () => { pick(f.itemId); notifications.show({ title: '個体IDを発行しました', message: f.itemId, color: 'green' }) })} />
+        onSave={(f) => run(() => registerIndividual(f), (r) => { pick(f.itemId); notifyRecorded(`個体IDを発行しました：${f.itemId}`, r) })} />
       {it && <>
         <AddInfoModal opened={modal === 'add'} onClose={() => setModal(null)} item={it} busy={busy}
-          onSave={(type, detail, photo) => run(() => appendEvent(it.id, type, detail, photo), (r) => notifications.show({ title: '追記しました', message: r.txHash ? 'チェーンに指紋を残しました' : `${it.id} に記録を追加しました`, color: 'green' }))} />
+          onSave={(type, detail, photo) => run(() => appendEvent(it.id, type, detail, photo), (r) => notifyRecorded('追記しました', r))} />
         <ProcessModal key={it.id + (modal === 'process')} opened={modal === 'process'} onClose={() => setModal(null)} item={it} items={items} products={db.products} busy={busy}
           onSave={(f) => run(() => processItem({ parent: it, ...f }), () => notifications.show({ title: '子IDを発行しました', message: `${f.childIds.length}件の加工品に親ID ${it.id} を紐づけました`, color: 'green' }))} />
       </>}
