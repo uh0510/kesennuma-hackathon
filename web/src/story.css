@@ -70,6 +70,7 @@
 .journey-map .maplibregl-ctrl-attrib { display: none; }
 .map-pin.left { flex-direction: row-reverse; }
 .map-pin.below-left { flex-direction: column; align-items: flex-end; gap: 8px; }
+.map-pin.below { flex-direction: column; align-items: center; gap: 8px; }
 .map-pin { display: flex; align-items: center; gap: 10px; opacity: 0.25; transition: opacity 500ms var(--ease-out); }
 .map-pin.on { opacity: 1; }
 .map-pin .dot { width: 14px; height: 14px; border-radius: 50%; background: #64d2ff; box-shadow: 0 0 0 4px rgba(100, 210, 255, 0.25); position: relative; flex-shrink: 0; }

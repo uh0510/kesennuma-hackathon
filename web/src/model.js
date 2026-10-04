@@ -41,7 +41,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
         shipName: (snap?.ship ?? ship[r.ship_id])?.name ?? null, gear: (snap?.ship ?? ship[r.ship_id])?.gear ?? null, maker: biz[r.created_by]?.name ?? null,
         storage: (snap?.product ?? prod[r.product_id])?.storage ?? null, shelfDays: (snap?.product ?? prod[r.product_id])?.shelf_days ?? null,
       },
-      events: evs.map((e) => ({ id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash })),
+      events: evs.map((e) => ({ id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash, loc: e.payload?.location ?? null })),
     }
   }
   for (const it of Object.values(out)) if (it.parent && out[it.parent]) out[it.parent].children.push(it.id)

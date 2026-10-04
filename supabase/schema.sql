@@ -10,6 +10,9 @@ create table businesses (
   name        text not null,
   role        text not null check (role in ('market','processor','retailer','exporter','admin')),
   wallet      text unique,              -- 署名に使うアドレス（0x...）
+  address     text,                     -- 登録住所
+  lat         double precision,         -- 登録住所の座標（記録した場所と比べる）
+  lng         double precision,
   created_at  timestamptz not null default now()
 );
 

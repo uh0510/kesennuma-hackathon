@@ -139,9 +139,10 @@ function JourneyMap({ stops, t }) {
       const wide = box.current.clientWidth > 700
       map.fitBounds(b, { padding: wide ? { top: 160, bottom: 160, left: 260, right: 260 } : { top: 150, bottom: 150, left: 60, right: 60 }, duration: 0, maxZoom: 7 })
       // ラベルの出し方：右・左・左下（スマホでは横に並べると重なるので左下）。点の中心が地点に重なるよう基準をずらす
-      const PLACE = { right: ['left', [-7, 0]], left: ['right', [7, 0]], 'below-left': ['top-right', [7, -7]] }
-      stops.forEach((s) => {
-        const side = s.side === 'left' ? (wide ? 'left' : 'below-left') : 'right'
+      const PLACE = { right: ['left', [-7, 0]], left: ['right', [7, 0]], 'below-left': ['top-right', [7, -7]], below: ['top', [0, -7]] }
+      stops.forEach((s, i) => {
+        // 漁獲の海域は左（スマホは左下）。3つ目以降の地点は前の地点とラベルが重ならないよう、交互に左（スマホは下）へ
+        const side = s.side === 'left' ? (wide ? 'left' : 'below-left') : i >= 2 && i % 2 === 0 ? (wide ? 'left' : 'below') : 'right'
         const el = document.createElement('div')
         el.className = `map-pin ${side}`
         el.innerHTML = `<span class="dot"></span><span class="tag"><b>${s.label}</b>${s.sub ? `<small>${s.sub}</small>` : ''}</span>`
@@ -267,11 +268,24 @@ function Story({ items, cur, all, setSel, demo, lang, setLang }) {
   const { scrollYProgress } = useScroll({ target: journeyRef, offset: ['start 70%', 'end 60%'] })
   const progress = useSpring(scrollYProgress, { stiffness: 120, damping: 30 })
 
-  // 地図の地点（気仙沼の中で近い地点はまとめる）
+  // 地図の地点：漁獲した海域 → 記録された場所を時間順に。3km 以内に続く地点は1つにまとめ、そこで行われたことを並べる
   const stops = useMemo(() => {
     const s = [{ at: AREA_POINTS[root.info.catchArea] ?? AREA_POINTS['北西太平洋（FAO 61）'], label: t.pinCatch, sub: `${tr(root.info.catchArea) ?? t.unknownArea}${t.pinApprox}`, side: 'left' }]
-    s.push({ at: KESENNUMA_PORT, label: tr('気仙沼港'), sub: chain.length > 1 ? t.pinLandedProcessed : t.pinLanded })
-    return s
+    const placed = chain.flatMap((c) => c.rawEvents.map((e) => ({ e, c }))).filter(({ e }) => e.payload?.location && t.pinDid[e.type]).sort((a, b) => a.e.id - b.e.id)
+    for (const { e, c } of placed) {
+      const at = [e.payload.location.lng, e.payload.location.lat]
+      const did = t.pinDid[e.type]
+      const last = s.length > 1 ? s.at(-1) : null
+      if (last && km(last.at, at) <= 3) {
+        if (!last.dids.includes(did)) last.dids.push(did)
+        continue
+      }
+      const who = c.events.find((x) => x.id === e.id)?.who
+      s.push({ at, label: e.type === 'landing' ? tr('気仙沼港') : tr(who), dids: [did] })
+    }
+    // 場所の記録がない（つなぐ前の記録など）ときは、これまでどおり気仙沼港を置く
+    if (s.length === 1) s.push({ at: KESENNUMA_PORT, label: tr('気仙沼港'), dids: [chain.length > 1 ? t.pinLandedProcessed : t.pinLanded] })
+    return s.map((p) => (p.dids ? { ...p, sub: p.dids.join(' · '), dids: undefined } : p))
   }, [chain, lang])
   const distance = Math.round(stops.slice(1).reduce((n, s, i) => n + km(stops[i].at, s.at), 0) / 10) * 10
 

@@ -3,6 +3,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { ethers } from 'ethers'
 import { verifyChain, itemKey, sha256HexBytes } from './lib/hash.js'
+import { currentPosition, positionError } from './lib/geo.js'
 
 export const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
 
@@ -49,14 +50,16 @@ const photoBody = (photo) => (photo ? { photo: { base64: photo.base64, mediaType
 
 // ---- 書き込み（record-event） ----
 async function recordEvent(body) {
-  const { data, error } = await supabase.functions.invoke('record-event', { body })
+  // 記録した場所（取れなければ付けない。Edge Function が登録住所との距離を添えて記録に入れる）
+  const location = await currentPosition()
+  const { data, error } = await supabase.functions.invoke('record-event', { body: location ? { ...body, location } : body })
   if (error) {
     // Edge Function が返したエラー文を取り出す
     const msg = await error.context?.json?.().then((j) => j.error).catch(() => null)
     throw new Error(msg ?? error.message)
   }
   if (!data?.ok) throw new Error(data?.error ?? '記録に失敗しました')
-  return data
+  return { ...data, locationError: location ? null : positionError() }
 }
 
 // 水揚げした個体を登録（個体IDを発行し、landing を記録）
@@ -75,14 +78,15 @@ export function appendEvent(itemId, type, detail, photo) {
 
 // 加工して子IDを発行：親に process を記録し、子の数だけ born を記録する
 export async function processItem({ parent, childIds, productId, name, weights, photo }) {
-  await recordEvent({ itemId: parent.id, type: 'process', payload: { detail: `子ID ${childIds.length}件を発行（${name}）`, children: childIds } })
+  let last = await recordEvent({ itemId: parent.id, type: 'process', payload: { detail: `子ID ${childIds.length}件を発行（${name}）`, children: childIds } })
   for (const [i, id] of childIds.entries()) {
-    await recordEvent({
+    last = await recordEvent({
       itemId: id, parentId: parent.id, type: 'born', ...photoBody(photo),
       newItem: { kind: 'product', species: parent.species, name, weight_kg: weights[i], product_id: productId ?? null },
       payload: { detail: `親ID ${parent.id} から発行`, weight_kg: weights[i] },
     })
   }
+  return last
 }
 
 // ラベルを貼ってQRを有効化（2回目はエラー）

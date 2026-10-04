@@ -14,7 +14,7 @@ import {
   IconFish, IconSearch, IconPlus, IconCut, IconQrcode, IconShieldCheck, IconSailboat, IconAnchor, IconGavel,
   IconPackage, IconTruck, IconSnowflake, IconPencil, IconCornerDownRight, IconUserSearch, IconDatabase,
   IconAlertTriangle, IconTag, IconLogin, IconLogout, IconLink, IconChevronRight, IconChevronLeft, IconUserCircle,
-  IconList, IconCircleCheckFilled, IconLock, IconCamera,
+  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin,
 } from '@tabler/icons-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
@@ -24,6 +24,7 @@ import {
 } from './api.js'
 import { checkWeight, childIds } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
+import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
 import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify } from './model.js'
 import { ConsumerView } from './consumer.jsx'
@@ -68,9 +69,12 @@ const MOBILE = '(max-width: 47.99em)'
 
 const qrUrl = (id) => `${location.origin}${location.pathname}?id=${encodeURIComponent(id)}`
 // 記録できたことを知らせる。チェーンへの記録だけ失敗したときは、そのことも伝える
-const notifyRecorded = (title, r) => notifications.show(r?.chainError
-  ? { title, message: `記録は保存しました。ブロックチェーンへの記録はできませんでした（${r.chainError.slice(0, 80)}）`, color: 'yellow', autoClose: 10000 }
-  : { title, message: r?.txHash ? 'ブロックチェーンに指紋を残しました' : '記録を保存しました', color: 'green' })
+const notifyRecorded = (title, r) => {
+  const geo = r?.locationError ? `（位置は記録できませんでした：${r.locationError}）` : ''
+  notifications.show(r?.chainError
+    ? { title, message: `記録は保存しました。ブロックチェーンへの記録はできませんでした（${r.chainError.slice(0, 80)}）${geo}`, color: 'yellow', autoClose: 10000 }
+    : { title, message: `${r?.txHash ? 'ブロックチェーンに指紋を残しました' : '記録を保存しました'}${geo}`, color: geo ? 'yellow' : 'green', autoClose: geo ? 10000 : 4000 })
+}
 const errMsg = (e) => notifications.show({ color: 'red', title: 'できませんでした', message: e.message ?? String(e), autoClose: 8000 })
 const useIsMobile = () => useMediaQuery(MOBILE, false, { getInitialValueInEffect: false })
 
@@ -194,6 +198,40 @@ function Overview({ items, dark = false }) {
         </div>
       ))}
     </div>
+  )
+}
+
+// 記録した場所：登録住所の近くか、離れていたか（離れていたら黄色で目立たせる）
+function LocationNote({ loc }) {
+  if (!loc) return <Text size="xs" c="dimmed">位置なし</Text>
+  if (loc.distance_m == null) return <Text size="xs" c="dimmed"><IconMapPin size={11} style={{ verticalAlign: -1 }} /> 位置を記録</Text>
+  const far = loc.distance_m > OFFSITE_M
+  const d = loc.distance_m >= 1000 ? `${(loc.distance_m / 1000).toFixed(1)}km` : `${loc.distance_m}m`
+  return far
+    ? <Badge size="sm" color="yellow" tt="none" leftSection={<IconMapPin size={11} />}>登録住所から {d} 離れた場所で記録</Badge>
+    : <Text size="xs" c="dimmed"><IconMapPin size={11} style={{ verticalAlign: -1 }} /> 登録住所の近く（約 {d}）</Text>
+}
+
+// 記録の画面を開いたら位置を取りにいき、取れたか・取れなかった理由を出す（取れなくても記録はできる）
+function GeoStatus({ opened }) {
+  const [st, setSt] = useState({ state: 'idle' })
+  const get = async (fresh) => {
+    setSt({ state: 'busy' })
+    const p = await currentPosition({ fresh })
+    setSt(p ? { state: 'ok', acc: Math.round(p.accuracy) } : { state: 'ng', reason: positionError() })
+  }
+  useEffect(() => { if (opened) get(false) }, [opened])
+  if (st.state === 'idle') return null
+  return (
+    <Group gap={8} wrap="nowrap" className="geo-status" data-state={st.state}>
+      {st.state === 'busy' ? <Loader size={14} /> : <IconMapPin size={16} />}
+      <Text size="xs" style={{ flex: 1 }}>
+        {st.state === 'busy' && '今いる場所を確かめています…'}
+        {st.state === 'ok' && `位置：取得できました（誤差 約${st.acc}m）。記録に場所も残します`}
+        {st.state === 'ng' && `位置：${st.reason}。位置なしで記録します`}
+      </Text>
+      {st.state === 'ng' && <Button size="compact-xs" variant="light" onClick={() => get(true)}>もう一度取得</Button>}
+    </Group>
   )
 }
 
@@ -339,7 +377,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack })
   // 写真：自分の写真がなければ、元の1尾の写真を引き継いで出す
   const bandPhoto = it.photos.at(-1) ?? root.photos[0] ?? null
   const chainPhotos = [...anc, it].flatMap((c) => c.photos.map((p) => ({ ...p, owner: c })))
-  const activate = () => guard(() => run(() => activateQr(it.id), () => notifications.show({ title: 'QRを有効にしました', message: 'このQRは2回目の有効化ができません', color: 'green' })))
+  const activate = () => guard(() => run(() => activateQr(it.id), (r) => notifyRecorded('QRを有効にしました（2回目の有効化はできません）', r)))
 
   return (
     <Stack gap="lg" className="fadein" key={it.id}>
@@ -427,7 +465,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack })
                 <Timeline.Item key={e.id} bullet={<T.icon size={16} />} title={<Group gap="xs"><Text fw={600}>{T.label}</Text><Text size="xs" c="dimmed">{e.t}</Text></Group>}>
                   {e.detail && <Text size="sm">{e.detail}</Text>}
                   <Group gap="xs" mt={4}>
-                    <Text size="xs" c="dimmed">{e.who}</Text><Code fz="xs">{shortHash(e.hash)}</Code>
+                    <Text size="xs" c="dimmed">{e.who}</Text><Code fz="xs">{shortHash(e.hash)}</Code><LocationNote loc={e.loc} />
                     {e.tx && <Anchor size="xs" href={explorerTx(e.tx)} target="_blank"><Group gap={2}><IconLink size={12} />チェーン</Group></Anchor>}
                   </Group>
                 </Timeline.Item>
@@ -511,7 +549,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
         <AddInfoModal opened={modal === 'add'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(type, detail, photo) => run(() => appendEvent(it.id, type, detail, photo), (r) => notifyRecorded('追記しました', r))} />
         <ProcessModal key={it.id + (modal === 'process')} opened={modal === 'process'} onClose={() => setModal(null)} item={it} items={items} products={db.products} busy={busy}
-          onSave={(f) => run(() => processItem({ parent: it, ...f }), () => notifications.show({ title: '子IDを発行しました', message: `${f.childIds.length}件の加工品に親ID ${it.id} を紐づけました`, color: 'green' }))} />
+          onSave={(f) => run(() => processItem({ parent: it, ...f }), (r) => notifyRecorded(`子IDを${f.childIds.length}件発行し、親ID ${it.id} を紐づけました`, r))} />
       </>}
     </>
   )
@@ -530,6 +568,7 @@ function AddInfoModal({ opened, onClose, item, busy, onSave }) {
         <TextInput label="内容" placeholder="例：冷凍庫Bへ移動、−50℃" value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
         <PhotoPicker value={photo} onChange={setPhoto} />
         <Text size="sm" c="dimmed">保存すると、この記録は消せません。記録する事業者はログイン中の事業者になります。</Text>
+        <GeoStatus opened={opened} />
         <Group justify="flex-end" mt="sm"><Button variant="default" onClick={onClose}>やめる</Button><Button disabled={!detail} loading={busy} onClick={() => { onSave(type, detail, photo); setDetail(''); setPhoto(null) }}>追記する</Button></Group>
       </Stack>
     </Sheet>
@@ -594,7 +633,8 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
           <Alert key={i.message} radius="md" color={i.level === 'error' ? 'red' : i.level === 'warning' ? 'yellow' : 'apple'} variant="light" icon={<IconAlertTriangle size={18} />}>{i.message}</Alert>
         ))}
         <PhotoPicker value={photo} onChange={setPhoto} label="加工品の写真" hint="撮らなくても、元の1尾の写真が消費者の画面に出ます" />
-        <Text size="sm" c="dimmed">子ID {n}件（{ids[0]} …）を発行し、すべてに親IDを持たせます。漁船・海域などは親から自動で引き継ぎます。</Text>
+        <Text size="sm" c="dimmed">子ID {n}件（{ids[0]} …）を発行し、すべてに親IDを持たせます。魚種・漁船・海域などは親から自動で引き継ぎます。</Text>
+        <GeoStatus opened={opened} />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button leftSection={<IconCut size={18} />} loading={busy} disabled={!check.ok || n < 1 || !name}
@@ -661,6 +701,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
           styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
         <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真" hint="消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます" />
         <LabelPreview itemId={itemId} species={species} kg={kg} shipName={ship?.name} />
+        <GeoStatus opened={opened} />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!ship || !(Number(kg) > 0)} leftSection={<IconTag size={18} />}

@@ -175,3 +175,8 @@ body::before {
 }
 
 .brand-en { opacity: 0.6; }
+
+/* 記録の画面の位置の状態 */
+.geo-status { padding: 8px 12px; border-radius: 12px; background: rgba(0, 113, 227, 0.06); color: var(--apple-text-2); }
+.geo-status[data-state='ok'] { background: rgba(52, 199, 89, 0.1); color: #1d7a3a; }
+.geo-status[data-state='ng'] { background: rgba(255, 159, 10, 0.12); color: #8a5300; }

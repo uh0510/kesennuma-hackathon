@@ -2,6 +2,8 @@
 // 呼び出し：POST /functions/v1/record-event
 //   { itemId, type, payload, parentId?, newItem?, photo? }   ※ Authorization ヘッダにログイン中のユーザーのトークン
 //   photo = { base64, mediaType }。Storage（photos バケット）に保存し、写真の指紋を payload.photo に入れて記録の指紋に含める
+//   location = { lat, lng, accuracy }（記録した場所）。その時点の事業者の登録住所の座標と距離を添えて payload.location に入れる
+// 加工品（born）の魚種は、画面から送られた値ではなく親の魚種を使う（途中で魚種を書き換えられないように）
 // 秘密情報（Supabase の secrets に登録）：
 //   CHAIN_RPC_URL（旧 AMOY_RPC_URL）, REGISTRY_ADDRESS, ISSUER_KEYS = {"<business_id>":"0x<private key>", ...}
 //   REGISTRY_ADDRESS が未設定のあいだはチェーン記録を飛ばす（DBだけで動かす。tx_hash は空のまま）
@@ -85,6 +87,32 @@ async function sendWithRetry(wallet: ethers.Wallet, send: (nonce: number) => Pro
   }
 }
 
+// 2点間の距離（m）
+function distanceM(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const r = Math.PI / 180, R = 6371000
+  const a = Math.sin(((lat2 - lat1) * r) / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(((lng2 - lng1) * r) / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
+// 記録した場所。数値として正しいものだけ受け取り、事業者の登録住所の座標（その時点の写し）と距離を添える
+// deno-lint-ignore no-explicit-any
+async function locate(supa: any, actor: string, loc: { lat?: unknown; lng?: unknown; accuracy?: unknown } | null) {
+  const lat = Number(loc?.lat), lng = Number(loc?.lng)
+  if (!loc || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null
+  const acc = Number(loc.accuracy)
+  // 記録は誰でも読めるので、座標は約100m単位（小数3桁）に丸めて残す。登録住所との距離は丸める前の座標で計算する
+  const out: Record<string, unknown> = {
+    lat: Math.round(lat * 1e3) / 1e3, lng: Math.round(lng * 1e3) / 1e3,
+    accuracy_m: Number.isFinite(acc) && acc > 0 ? Math.round(acc) : null,
+  }
+  const { data: biz } = await supa.from('businesses').select('lat, lng').eq('id', actor).maybeSingle()
+  if (biz?.lat != null && biz?.lng != null) {
+    out.registered = { lat: biz.lat, lng: biz.lng }
+    out.distance_m = Math.round(distanceM(lat, lng, biz.lat, biz.lng))
+  }
+  return out
+}
+
 // 登録した瞬間の値（マスタの値を含む）を写し取る
 // deno-lint-ignore no-explicit-any
 async function snapshot(supa: any, row: Record<string, unknown>, parentId: string | null) {
@@ -106,7 +134,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
-    const { itemId, type, payload = {}, parentId = null, newItem = null, photo = null } = await req.json()
+    const { itemId, type, payload = {}, parentId = null, newItem = null, photo = null, location = null } = await req.json()
     const supa = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
     // 呼び出した人の事業者を特定
@@ -123,13 +151,21 @@ Deno.serve(async (req) => {
       if (error) throw error
     }
 
-    // 写し（item）と写真の指紋（photo）はサーバーが作ったものだけ。画面から送られてきたものは捨てる
-    const { item: _item, photo: _photo, ...rest } = payload
+    // 写し（item）・写真の指紋（photo）・場所（location）はサーバーが作ったものだけ。画面から payload で送られてきたものは捨てる
+    const { item: _item, photo: _photo, location: _location, ...rest } = payload
     let body: Record<string, unknown> = rest
 
     // 発行する項目を先に確かめ、写真を保存してから items を作る（途中で失敗しても items だけが残らないように）
     const row = newItem ? pickNewItem(newItem, type, parentId) : null
+    if (row?.kind === 'product') {
+      // 加工品の魚種は親から引き継ぐ（画面から送られた魚種は使わない）
+      const { data: parent } = await supa.from('items').select('species').eq('id', parentId).maybeSingle()
+      if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
+      row.species = parent.species
+    }
     if (photo) body = { ...body, photo: await savePhoto(supa, itemId, photo) }
+    const where = await locate(supa, actor, location)
+    if (where) body = { ...body, location: where }
 
     // 新しいID（個体 or 加工品）の作成。写しは指紋に含める
     if (row) {
