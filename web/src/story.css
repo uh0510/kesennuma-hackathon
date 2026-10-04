@@ -22,7 +22,11 @@
   background: radial-gradient(ellipse at 30% 30%, rgba(10, 132, 255, 0.35), transparent 55%), radial-gradient(ellipse at 75% 60%, rgba(48, 209, 88, 0.18), transparent 55%);
 }
 .story-hero > *:not(.hero-glow) { position: relative; z-index: 1; }
-.story-hero > .demo-picker { position: absolute; top: 16px; right: 24px; width: min(360px, calc(100% - 48px)); }
+.story-hero > .hero-top { position: absolute; top: 16px; right: 24px; display: flex; gap: 10px; align-items: center; }
+.hero-top .demo-picker { width: min(320px, 50vw); }
+.lang-toggle { display: inline-flex; padding: 3px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14); }
+.lang-toggle button { border: 0; background: none; color: var(--fg-2); font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 99px; cursor: pointer; }
+.lang-toggle button[data-active] { background: #f5f5f7; color: #000; }
 .story-h1 {
   font-size: clamp(34px, 6vw, 68px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; margin: 10px 0 0;
   background: linear-gradient(180deg, #fff 30%, #9ecbff 120%); -webkit-background-clip: text; background-clip: text; color: transparent;
@@ -151,7 +155,8 @@ body:has(.dark-shell) { background: #000; }
 
 @media (max-width: 47.99em) {
   .story-hero { padding: 28px 20px 28px; }
-  .story-hero > .demo-picker { position: static; width: 100%; margin-bottom: 28px; }
+  .story-hero > .hero-top { position: static; margin-bottom: 24px; justify-content: flex-end; }
+  .hero-top .demo-picker { flex: 1; width: auto; }
   .hero-grid { grid-template-columns: 1fr; gap: 20px; }
   .hero-grid .hero-photo { order: 0; }
   .hero-photo > img { border-radius: 20px; aspect-ratio: 16 / 11; }

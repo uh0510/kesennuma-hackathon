@@ -1,4 +1,4 @@
--- 浜の履歴書 サンプルのマスタ（schema.sql のあとに SQL Editor で実行）
+-- 魚籍（GYOSEKI） サンプルのマスタ（schema.sql のあとに SQL Editor で実行）
 -- 名前・番号はすべて仮。ヒアリングで分かったら差し替える
 -- 事業者の id を固定しておくと、ISSUER_KEYS（事業者ごとの署名鍵）の設定で迷わない
 

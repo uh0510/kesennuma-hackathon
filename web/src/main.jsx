@@ -24,6 +24,7 @@ import {
 } from './api.js'
 import { checkWeight, childIds } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
+import { BRAND } from './brand.js'
 import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify } from './model.js'
 import { ConsumerView } from './consumer.jsx'
 
@@ -245,7 +246,7 @@ function LabelPreview({ itemId, species, kg, shipName }) {
       <div className="label-preview">
         <Paper p={6} radius="sm" withBorder><QRCodeSVG value={qrUrl(itemId)} size={76} /></Paper>
         <div style={{ minWidth: 0 }}>
-          <Text size="xs" c="dimmed" fw={600}>浜の履歴書 · 気仙沼港</Text>
+          <Text size="xs" c="dimmed" fw={600}>{BRAND.ja} · 気仙沼港</Text>
           <Text ff="monospace" fw={700} size="md" style={{ wordBreak: 'break-all' }}>{itemId}</Text>
           <Text size="sm" c="dimmed">{species} · {Number(kg) || 0} kg · {shipName ?? '—'}</Text>
         </div>
@@ -821,7 +822,10 @@ function App() {
         <Group h="100%" justify="space-between" wrap="nowrap" maw={1280} mx="auto">
           <Group gap={10} wrap="nowrap">
             <Center w={32} h={32} style={{ borderRadius: 9, background: 'linear-gradient(135deg, #0a84ff, #0071e3 55%, #34c759)' }}><IconFish size={19} color="white" /></Center>
-            <Text fw={700} size="md" className="brand" style={{ letterSpacing: '-0.01em' }}>浜の履歴書</Text>
+            <Group gap={6} align="baseline" wrap="nowrap">
+              <Text fw={700} size="md" className="brand" style={{ letterSpacing: '0.04em' }}>{BRAND.ja}</Text>
+              <Text fw={600} size="xs" className="brand brand-en" style={{ letterSpacing: '0.12em' }}>{BRAND.en}</Text>
+            </Group>
           </Group>
           <Group gap="sm" wrap="nowrap">
             {!isMobile && showNav && (

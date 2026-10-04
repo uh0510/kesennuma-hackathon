@@ -1,4 +1,4 @@
--- 浜の履歴書 DB定義（Supabase / PostgreSQL）
+-- 魚籍（GYOSEKI） DB定義（Supabase / PostgreSQL）
 -- 方針：データ本体はDB、チェーンにはハッシュと親子関係だけを記録する
 --       events は「追記のみ」。UPDATE / DELETE はトリガーで拒否する
 

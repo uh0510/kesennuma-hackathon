@@ -173,3 +173,5 @@ body::before {
   .stat-tile { flex: 0 0 auto; min-width: 150px; scroll-snap-align: start; padding: 14px 16px; }
   .detail-band { padding: 20px; }
 }
+
+.brand-en { opacity: 0.6; }
