@@ -20,15 +20,15 @@ import {
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
-  supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll,
-  registerIndividual, appendEvent, processItem, activateQr, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany,
+  supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
+  registerIndividual, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
 import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
 import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify } from './model.js'
-import { ConsumerView } from './consumer.jsx'
+import { ConsumerNotice, ConsumerView } from './consumer.jsx'
 
 // Apple Blue を中心にした色の段階（Mantine は10段階で持つ）
 const theme = createTheme({
@@ -173,7 +173,6 @@ const STAGES = {
 }
 function Stages({ it }) {
   const done = new Set(it.events.map((e) => e.type))
-  if (it.qr === 'active') done.add('activate')
   return (
     <div className="stages">
       {STAGES[it.kind].map(([k, label, Icon]) => (
@@ -195,7 +194,7 @@ function Overview({ items, dark = false }) {
     { label: '今日の水揚げ', value: roots.filter((r) => r.info.landedAt && ymd(r.info.landedAt) === today).length, unit: '尾', icon: IconAnchor, color: '#0a84ff' },
     { label: '登録した個体', value: roots.length, unit: '尾', icon: IconFish, color: '#5e5ce6' },
     { label: '加工品', value: all.length - roots.length, unit: '件', icon: IconPackage, color: '#ff9f0a' },
-    { label: 'ラベル未貼付', value: all.filter((x) => x.qr !== 'active').length, unit: '件', icon: IconTag, color: '#ff375f' },
+    { label: '販売中', value: all.filter((x) => x.sold).length, unit: '件', icon: IconBuildingStore, color: '#30d158' },
   ]
   return (
     <div className="overview">
@@ -387,18 +386,17 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
   )
 }
 
-// ラベルのQR（貼るまでは薄く表示し、有効化ボタンを出す）
-function QrBlock({ it, busy, onActivate, onPrint, size = 112, onBand = false }) {
+// ラベルのQR。販売開始で有効になり、消費者が読めるようになる（それまでは薄く表示）
+// 事業者はログインしていれば、有効になる前でも読める
+function QrBlock({ it, onPrint, size = 112, onBand = false }) {
   return (
     <Stack align="center" gap={8}>
       <Paper p={8} radius="md" shadow={onBand ? 'md' : undefined} style={{ background: 'white' }}>
         <Box style={{ opacity: it.qr === 'active' ? 1 : 0.4 }}><QRCodeSVG value={qrUrl(it.id)} size={size} /></Box>
       </Paper>
       {it.qr === 'active'
-        ? <Badge variant={onBand ? 'white' : 'light'} color="green" leftSection={<IconCircleCheckFilled size={12} />}>QR 有効</Badge>
-        : onActivate
-          ? <Button size="xs" variant={onBand ? 'white' : 'light'} leftSection={<IconTag size={14} />} loading={busy} onClick={onActivate}>貼ったので有効化</Button>
-          : <Badge variant={onBand ? 'white' : 'light'} color="gray">QR 未有効</Badge>}
+        ? <Badge variant={onBand ? 'white' : 'light'} color="green" tt="none" leftSection={<IconCircleCheckFilled size={12} />}>消費者に公開中</Badge>
+        : <Badge variant={onBand ? 'white' : 'light'} color="gray" tt="none">販売開始で公開</Badge>}
       {onPrint && (
         <Button size="compact-xs" variant={onBand ? 'white' : 'subtle'} leftSection={<IconPrinter size={13} />} onClick={onPrint}>
           {it.qty > 1 ? `ラベルを印刷（${it.qty}枚）` : 'ラベルを印刷'}
@@ -457,7 +455,6 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
   // 写真：自分の写真がなければ、元の1尾の写真を引き継いで出す
   const bandPhoto = it.photos.at(-1) ?? root.photos[0] ?? null
   const chainPhotos = [...anc, it].flatMap((c) => c.photos.map((p) => ({ ...p, owner: c })))
-  const activate = () => guard(() => run(() => activateQr(it.id), (r) => notifyRecorded('QRを有効にしました（2回目の有効化はできません）', r)))
   // 立場：今の持ち主か、受け取る相手か、どちらでもないか（未ログインはボタンを押すとログインを求める）
   const myId = me?.business?.id ?? null
   const cu = it.custody
@@ -505,7 +502,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               </div>
               <Text size="xs" ff="monospace" c="rgba(255,255,255,0.85)" style={{ wordBreak: 'break-all' }}>{it.id}</Text>
             </Stack>
-            {!isMobile && <QrBlock it={it} busy={busy} onActivate={canAct ? activate : null} onPrint={() => onPrint([it])} size={104} onBand />}
+            {!isMobile && <QrBlock it={it} onPrint={() => onPrint([it])} size={104} onBand />}
           </Group>
         </div>
         <Box p={isMobile ? 'md' : 'lg'}>
@@ -570,7 +567,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               加工品のラベルを印刷（{it.children.length}ロット・{it.children.reduce((n, id) => n + items[id].qty, 0)}枚）
             </Button>
           )}
-          {isMobile && <Box mt="lg"><QrBlock it={it} busy={busy} onActivate={canAct ? activate : null} onPrint={() => onPrint([it])} size={104} /></Box>}
+          {isMobile && <Box mt="lg"><QrBlock it={it} onPrint={() => onPrint([it])} size={104} /></Box>}
         </Box>
       </Card>
 
@@ -1305,9 +1302,11 @@ function TabBar({ view, pane, onList, onRegister, onScan, onConsumer }) {
 }
 
 function App() {
-  const qid = new URLSearchParams(location.search).get('id') // QRから開いたとき（消費者）
+  // QRから開いたときの ID。ログインした事業者が自分の見える範囲の魚を読んだら、管理画面の詳細を開いて消す
+  const [qid, setQid] = useState(() => new URLSearchParams(location.search).get('id'))
   const isMobile = useIsMobile()
   const [db, setDb] = useState(null)
+  const [trace, setTrace] = useState(null) // 消費者として読んだとき：'ok' | 'inactive' | 'missing'
   const [loadErr, setLoadErr] = useState(null)
   const [me, setMe] = useState(null)
   const [authChecked, setAuthChecked] = useState(false) // ログイン状態を確かめ終えたか
@@ -1319,11 +1318,31 @@ function App() {
   // QRから来た消費者・ログインしていない人には、管理用の切り替えを見せない
   const showNav = !qid && !!me
 
+  // 事業者（ログイン）：見える範囲を読む。QR の ID がその中にあれば管理画面の詳細を開く
+  // 消費者（または見える範囲にない ID）：その ID 1件分だけ読む（販売開始前なら何も返らない）
   const reload = useCallback(async () => {
-    try { setDb(await fetchAll()); setLoadErr(null) } catch (e) { setLoadErr(e.message ?? String(e)) }
-  }, [])
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) {
+        const all = await fetchAll()
+        if (!qid || all.items.some((r) => r.id === qid)) {
+          setDb(all); setTrace(null); setLoadErr(null)
+          if (qid) {
+            setSel(qid); setView('manage'); setPane('detail')
+            history.replaceState(null, '', location.pathname)
+            setQid(null)
+          }
+          return
+        }
+      }
+      if (!qid) return setDb(null)
+      const r = await fetchTrace(qid)
+      setTrace(r.status); setDb(r.db ?? null); setLoadErr(null)
+    } catch (e) { setLoadErr(e.message ?? String(e)) }
+  }, [qid])
+  // ログイン状態が分かってから読む（ログイン・ログアウトしたら読み直す）
+  useEffect(() => { if (authChecked) reload() }, [authChecked, me?.business?.id, qid])
   useEffect(() => {
-    reload()
     fetchMe().then((m) => { setMe(m); setAuthChecked(true) })
     // コールバックの中で Supabase を呼ぶと詰まることがあるので、次の処理に回す
     const { data: { subscription } } = supabase.auth.onAuthStateChange(() => setTimeout(() => fetchMe().then((m) => { setMe(m); setAuthChecked(true) }), 0))
@@ -1340,7 +1359,7 @@ function App() {
     fn()
   }
   const onScanned = (id) => {
-    if (!items?.[id]) return notifications.show({ color: 'red', message: `ID ${id} は登録されていません` })
+    if (!items?.[id]) return notifications.show({ color: 'red', message: `ID ${id} は見つかりません（登録されていないか、あなたの事業者が扱っていない魚です）` })
     setModal(null); setSel(id); setPane('detail')
     notifications.show({ message: `QRを読み取りました：${items[id].name}`, color: 'apple' })
   }
@@ -1366,6 +1385,8 @@ function App() {
   // ログイン状態を確かめ終えるまで待つ。QRから来た消費者以外は、ログインしていなければログイン画面
   if (!authChecked && !qid) return <Center mih="100dvh" bg="#09142c"><Loader color="white" /></Center>
   if (!qid && !me) return <LoginPage />
+  // 消費者として読んだが、まだ販売前・ID がない
+  const notice = qid && trace && trace !== 'ok' ? trace : null
 
   return (
     <AppShell className={view === 'consumer' ? 'dark-shell' : 'navy-shell'} header={{ height: isMobile ? 56 : 64 }} footer={{ height: 64, collapsed: !(isMobile && showNav) }}
@@ -1392,6 +1413,7 @@ function App() {
 
       <AppShell.Main style={{ background: 'transparent' }}>
         {loadErr ? <Alert color="red" radius="lg" icon={<IconAlertTriangle />} title="データを読み込めませんでした" maw={720} mx="auto" mt="xl">{loadErr}</Alert>
+          : notice ? <ConsumerNotice status={notice} />
           : !items ? <Center mih={300}><Loader /></Center>
           : view === 'manage'
             ? <Manager items={items} db={db} sel={sel} setSel={setSel} reload={reload} guard={guard} modal={modal} setModal={setModal} pane={pane} setPane={setPane} me={me} />

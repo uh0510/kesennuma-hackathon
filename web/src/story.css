@@ -178,3 +178,7 @@ body:has(.dark-shell) { background: #000; }
 .dark-shell .glass-tabbar { background: rgba(0, 0, 0, 0.72) !important; border-color: rgba(255, 255, 255, 0.1) !important; }
 .dark-shell .tabbar-btn { color: #a1a1a6; }
 .dark-shell .tabbar-btn[data-active] { color: #64d2ff; }
+
+/* QR を読んだが見せられないとき */
+.story-notice { min-height: 70dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 48px 24px; text-align: center; max-width: 560px; margin: 0 auto; }
+.story-notice .lang-toggle { margin-bottom: 24px; }

@@ -247,6 +247,22 @@ export function ConsumerView({ items, sel, setSel, demo }) {
   return <Story key={cur} items={items} cur={cur} all={all} setSel={setSel} demo={demo} lang={lang} setLang={setLang} pack={pack} />
 }
 
+// QR を読んだが見せられないとき（販売前・ID がない）
+export function ConsumerNotice({ status }) {
+  const [lang, setLang] = useLang()
+  const t = STR[lang]
+  return (
+    <div className="story">
+      <div className="story-notice">
+        <LangToggle lang={lang} setLang={setLang} />
+        <div className="eyebrow-dark">{BRAND.ja} {BRAND.en}</div>
+        <h1 className="story-h2">{status === 'inactive' ? t.inactiveTitle : t.missingTitle}</h1>
+        <p className="story-lead">{status === 'inactive' ? t.inactiveLead : t.missingLead}</p>
+      </div>
+    </div>
+  )
+}
+
 // 日本語と英語の切り替え
 function LangToggle({ lang, setLang }) {
   return (

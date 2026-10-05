@@ -13,7 +13,8 @@
 //   CHAIN_RPC_URL（旧 AMOY_RPC_URL）, REGISTRY_ADDRESS, ISSUER_KEYS = {"<business_id>":"0x<private key>", ...}
 //   REGISTRY_ADDRESS が未設定のあいだはチェーン記録を飛ばす（DBだけで動かす。tx_hash は空のまま）
 //   チェーンへの送信に失敗しても DB の記録は残っているので ok:true で返し、chainError に理由を入れる
-// type='activate' はQRの有効化。activate_qr で1回だけ有効にしてから記録を残す
+// QR は販売開始（sell）を記録したときに自動で有効にする（消費者が読めるのは店頭に出てから）。
+//   手で有効化する type='activate' は受け付けない
 // 個体・加工品の発行（landing / born）では、そのときの値とマスタの値を payload.item に写し取り、指紋に含める。
 //   → あとでマスタを直しても、この記録の内容と指紋は変わらない。items の値が写しと食い違えば検証で分かる
 // 現場の人にウォレット操作をさせないため、事業者ごとの鍵をサーバーで預かって署名する（プロトタイプの割り切り）
@@ -124,7 +125,14 @@ function custodyOf(evs: any[]) {
 // deno-lint-ignore no-explicit-any
 const bizName = async (supa: any, id: string | null) => (id ? (await supa.from('businesses').select('name').eq('id', id).maybeSingle()).data?.name ?? id : '不明')
 
-const HOLDER_ONLY = ['process', 'auction', 'ship', 'storage', 'activate', 'sell']
+const HOLDER_ONLY = ['process', 'auction', 'ship', 'storage', 'sell']
+
+// 販売開始で QR を有効にする（すでに有効なものはそのまま）
+// deno-lint-ignore no-explicit-any
+async function activateOnSale(supa: any, ids: string[]) {
+  const { error } = await supa.from('items').update({ qr_status: 'active' }).in('id', ids).eq('qr_status', 'issued')
+  if (error) throw error
+}
 
 // 2点間の距離（m）
 function distanceM(lat1: number, lng1: number, lat2: number, lng2: number) {
@@ -272,6 +280,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
   }
   const { data: saved, error: ie } = await supa.from('events').insert(events).select('id, item_id, hash')
   if (ie) throw ie
+  if (type === 'sell') await activateOnSale(supa, ids)
 
   // チェーンに記録（未設定ならDBだけ）。失敗しても DB の記録は残っているので ok で返す
   const registry = Deno.env.get('REGISTRY_ADDRESS')
@@ -367,11 +376,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    // QRの有効化（2回目はここでエラーになり、記録も残らない）
-    if (type === 'activate') {
-      const { error } = await supa.rpc('activate_qr', { p_item: itemId })
-      if (error) throw error
-    }
+    // QR は販売開始で自動で有効になる（手での有効化は受け付けない）
+    if (type === 'activate') throw new Error('QRは販売開始を記録すると自動で有効になります')
 
     // 写し（item）・写真の指紋（photo）・場所（location）はサーバーが作ったものだけ。画面から payload で送られてきたものは捨てる
     const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, ...rest } = payload
@@ -406,6 +412,8 @@ Deno.serve(async (req) => {
       .insert({ item_id: itemId, type, actor, payload: body, prev_hash: prevHash, hash, created_at: createdAt })
       .select('id').single()
     if (e2) throw e2
+    // 販売開始で QR を有効にする（ここから消費者が読めるようになる）
+    if (type === 'sell') await activateOnSale(supa, [itemId])
 
     // チェーンに記録（未設定ならDBだけで終わる）
     const registry = Deno.env.get('REGISTRY_ADDRESS')

@@ -1,5 +1,7 @@
 // Supabase と Edge Functions の呼び出しをまとめる
-// 読み取りは公開キーで直接、書き込みはすべて record-event（Edge Function）を通す
+// 読み取り：ログインした事業者は見える範囲（自分が記録した・受け取る魚とその上流）を直接、
+//           消費者は QR の ID 1件分を public_trace で（販売開始で有効になったものだけ）
+// 書き込みはすべて record-event（Edge Function）を通す
 import { createClient } from '@supabase/supabase-js'
 import { ethers } from 'ethers'
 import { verifyChain, itemKey, sha256HexBytes } from './lib/hash.js'
@@ -30,7 +32,7 @@ export async function fetchMe() {
 }
 
 // ---- 読み取り ----
-// プロトタイプの規模なら全件読んで画面側で組み立てる方が単純
+// ログインした事業者：見える範囲を全部読んで画面側で組み立てる（範囲は DB の RLS が絞る）
 export async function fetchAll() {
   const [items, events, ships, products, businesses] = await Promise.all([
     supabase.from('items').select('*').order('created_at'),
@@ -41,6 +43,21 @@ export async function fetchAll() {
   ])
   for (const r of [items, events, ships, products, businesses]) if (r.error) throw r.error
   return { items: items.data, events: events.data, ships: ships.data, products: products.data, businesses: businesses.data }
+}
+
+// 消費者：QR の ID 1件分。status は 'ok' / 'inactive'（まだ販売前）/ 'missing'（ID がない）
+export async function fetchTrace(id) {
+  const [trace, ships, products, businesses] = await Promise.all([
+    supabase.rpc('public_trace', { p_item: id }),
+    supabase.from('ships').select('*').order('name'),
+    supabase.from('products').select('*').order('name'),
+    supabase.from('businesses').select('*'),
+  ])
+  for (const r of [trace, ships, products, businesses]) if (r.error) throw r.error
+  const t = trace.data
+  if (!t) return { status: 'missing' }
+  if (t.status !== 'ok') return { status: 'inactive' }
+  return { status: 'ok', db: { items: t.items, events: t.events, ships: ships.data, products: products.data, businesses: businesses.data } }
 }
 
 // 写真の公開URL（photos バケットは公開読み取り）
@@ -128,14 +145,9 @@ export function receiveItem({ itemId, weightKg, detail }) {
   return recordEvent({ itemId, type: 'receive', payload })
 }
 
-// 販売を始める：売場での表示名と場所を記録する
+// 販売を始める：売場での表示名と場所を記録する。QR はここで有効になる（消費者が読めるようになる）
 export function startSale({ itemId, displayName, detail }) {
   return recordEvent({ itemId, type: 'sell', payload: { detail: detail || `売場の表示：${displayName}`, display_name: displayName } })
-}
-
-// ラベルを貼ってQRを有効化（2回目はエラー）
-export function activateQr(itemId) {
-  return recordEvent({ itemId, type: 'activate', payload: { detail: 'ラベルを貼ってQRを有効化' } })
 }
 
 // ---- 改ざん検証 ----
