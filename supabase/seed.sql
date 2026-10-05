@@ -7,6 +7,11 @@ insert into businesses (id, name, role, address, lat, lng) values
   ('00000000-0000-0000-0000-000000000002', 'サンプル加工',               'processor', '宮城県気仙沼市（鹿折付近・仮）',   38.9128, 141.5870),
   ('00000000-0000-0000-0000-000000000003', 'サンプル小売',               'retailer',  '宮城県仙台市（仙台駅付近・仮）',   38.2601, 140.8822);
 
+-- 署名用アドレス（公開してよい値。チェーンの発行者を事業者名に直すのに使う）
+update businesses set wallet = '0x565984e1955B5d4176F4dC1AF5151c4F01B279D4' where id = '00000000-0000-0000-0000-000000000001';
+update businesses set wallet = '0xb97621650acF1D9A057d2B1F6aBf3792E62ff626' where id = '00000000-0000-0000-0000-000000000002';
+update businesses set wallet = '0xaE3Aa5DACebCB87B7f47471B5ADF731De29FC962' where id = '00000000-0000-0000-0000-000000000003';
+
 insert into ships (name, reg_no, permit_no, gear) values
   ('第八 海鳴丸', 'MG3-[登録番号]', '[許可番号]', 'はえ縄'),
   ('第五 浜風丸', 'MG3-[登録番号]', '[許可番号]', 'はえ縄');

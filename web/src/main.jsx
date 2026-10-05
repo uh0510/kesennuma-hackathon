@@ -1319,7 +1319,8 @@ function App() {
   const [qid, setQid] = useState(() => new URLSearchParams(location.search).get('id'))
   const isMobile = useIsMobile()
   const [db, setDb] = useState(null)
-  const [trace, setTrace] = useState(null) // 消費者として読んだとき：'ok' | 'inactive' | 'missing'
+  const [trace, setTrace] = useState(null) // 消費者として読んだとき：'ok' | 'inactive' | 'missing' | 'erased'
+  const [erased, setErased] = useState(null) // 'erased' のとき：チェーンに残っている発行の記録
   const [loadErr, setLoadErr] = useState(null)
   const [me, setMe] = useState(null)
   const [authChecked, setAuthChecked] = useState(false) // ログイン状態を確かめ終えたか
@@ -1350,7 +1351,7 @@ function App() {
       }
       if (!qid) return setDb(null)
       const r = await fetchTrace(qid)
-      setTrace(r.status); setDb(r.db ?? null); setLoadErr(null)
+      setTrace(r.status); setErased(r.erased ?? null); setDb(r.db ?? null); setLoadErr(null)
     } catch (e) { setLoadErr(e.message ?? String(e)) }
   }, [qid])
   // ログイン状態が分かってから読む（ログイン・ログアウトしたら読み直す）
@@ -1426,7 +1427,7 @@ function App() {
 
       <AppShell.Main style={{ background: 'transparent' }}>
         {loadErr ? <Alert color="red" radius="lg" icon={<IconAlertTriangle />} title="データを読み込めませんでした" maw={720} mx="auto" mt="xl">{loadErr}</Alert>
-          : notice ? <ConsumerNotice status={notice} />
+          : notice ? <ConsumerNotice status={notice} erased={erased} />
           : !items ? <Center mih={300}><Loader /></Center>
           : view === 'manage'
             ? <Manager items={items} db={db} sel={sel} setSel={setSel} reload={reload} guard={guard} modal={modal} setModal={setModal} pane={pane} setPane={setPane} me={me} />

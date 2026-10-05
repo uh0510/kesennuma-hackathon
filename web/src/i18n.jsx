@@ -51,6 +51,9 @@ export const STR = {
     forBusiness: '事業者の方はこちら', empty: 'まだ記録がありません',
     inactiveTitle: 'このラベルはまだ有効になっていません', inactiveLead: 'お店で販売が始まると、この魚の記録を見られるようになります。',
     missingTitle: 'このQRの記録が見つかりません', missingLead: 'ラベルの QR をもう一度読み取ってください。', demoPicker: '表示する商品（デモ用）',
+    erasedTitle: '記録が消された疑いがあります',
+    erasedLead: 'このラベルの番号は、たしかに登録されていました（あとから消せない台帳＝ブロックチェーンに残っています）。ところが今は、その記録を見ることができません。お店か、下の事業者にお問い合わせください。',
+    erasedId: 'ラベルの番号', erasedIssuer: '登録した事業者',
   },
   en: {
     eyebrow: 'GYOSEKI · The registry of this fish',
@@ -82,6 +85,9 @@ export const STR = {
     forBusiness: 'For businesses', empty: 'No records yet',
     inactiveTitle: 'This label is not active yet', inactiveLead: 'Its record becomes visible once the product goes on sale in a store.',
     missingTitle: 'No record found for this QR code', missingLead: 'Please scan the label again.', demoPicker: 'Product to show (demo)',
+    erasedTitle: 'This record may have been deleted',
+    erasedLead: 'This label number was registered — the blockchain, which cannot be altered afterwards, still holds that fact. But its records can no longer be found. Please contact the store or the business below.',
+    erasedId: 'Label number', erasedIssuer: 'Registered by',
   },
 }
 

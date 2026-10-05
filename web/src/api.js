@@ -14,6 +14,7 @@ const RPC = import.meta.env.VITE_CHAIN_RPC_URL ?? import.meta.env.VITE_AMOY_RPC_
 // 記録を確認するサイト（エクスプローラー）。テストネットを変えたらここも変える
 const EXPLORER = import.meta.env.VITE_EXPLORER_URL ?? 'https://sepolia.basescan.org'
 export const explorerTx = (tx) => `${EXPLORER}/tx/${tx}`
+export const explorerAddress = (a) => `${EXPLORER}/address/${a}`
 export const chainEnabled = Boolean(REGISTRY && /^0x[0-9a-fA-F]{40}$/.test(REGISTRY) && RPC)
 
 // ---- ログイン ----
@@ -55,9 +56,23 @@ export async function fetchTrace(id) {
   ])
   for (const r of [trace, ships, products, businesses]) if (r.error) throw r.error
   const t = trace.data
-  if (!t) return { status: 'missing' }
+  if (!t) {
+    // DB にないのにチェーンに発行の記録が残っている＝記録が消された疑い（書き換えだけでなく、消したことも見つける）
+    const issuer = await issuerOnChain(id).catch(() => null)
+    if (!issuer) return { status: 'missing' }
+    const biz = businesses.data.find((b) => b.wallet?.toLowerCase() === issuer.toLowerCase())
+    return { status: 'erased', erased: { id, issuer, issuerName: biz?.name ?? null } }
+  }
   if (t.status !== 'ok') return { status: 'inactive' }
   return { status: 'ok', db: { items: t.items, events: t.events, ships: ships.data, products: products.data, businesses: businesses.data } }
+}
+
+// チェーン上でそのIDを発行した事業者のアドレス（発行されていなければ null）
+async function issuerOnChain(id) {
+  if (!chainEnabled) return null
+  const reg = new ethers.Contract(REGISTRY, ['function issuerOf(bytes32) view returns (address)'], new ethers.JsonRpcProvider(RPC))
+  const a = await reg.issuerOf(await itemKey(id))
+  return a === ethers.ZeroAddress ? null : a
 }
 
 // 写真の公開URL（photos バケットは公開読み取り）
@@ -89,8 +104,7 @@ export async function nextIndividualId(prefix, knownIds) {
     if (!knownIds.includes(id)) candidates.push(id)
   }
   if (!chainEnabled) return candidates[0]
-  const reg = new ethers.Contract(REGISTRY, ['function issuerOf(bytes32) view returns (address)'], new ethers.JsonRpcProvider(RPC))
-  const used = await Promise.all(candidates.map(async (id) => (await reg.issuerOf(await itemKey(id))) !== ethers.ZeroAddress))
+  const used = await Promise.all(candidates.map(async (id) => Boolean(await issuerOnChain(id))))
   return candidates.find((_, i) => !used[i]) ?? candidates.at(-1)
 }
 

@@ -8,7 +8,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
 import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll } from './model.js'
-import { explorerTx } from './api.js'
+import { explorerTx, explorerAddress } from './api.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
 import { BRAND } from './brand.js'
 
@@ -247,17 +247,26 @@ export function ConsumerView({ items, sel, setSel, demo }) {
   return <Story key={cur} items={items} cur={cur} all={all} setSel={setSel} demo={demo} lang={lang} setLang={setLang} pack={pack} />
 }
 
-// QR を読んだが見せられないとき（販売前・ID がない）
-export function ConsumerNotice({ status }) {
+// QR を読んだが見せられないとき（販売前・ID がない・記録が消された疑い）
+export function ConsumerNotice({ status, erased }) {
   const [lang, setLang] = useLang()
   const t = STR[lang]
+  const [title, lead] = { inactive: [t.inactiveTitle, t.inactiveLead], erased: [t.erasedTitle, t.erasedLead] }[status] ?? [t.missingTitle, t.missingLead]
   return (
     <div className="story">
       <div className="story-notice">
         <LangToggle lang={lang} setLang={setLang} />
         <div className="eyebrow-dark">{BRAND.ja} {BRAND.en}</div>
-        <h1 className="story-h2">{status === 'inactive' ? t.inactiveTitle : t.missingTitle}</h1>
-        <p className="story-lead">{status === 'inactive' ? t.inactiveLead : t.missingLead}</p>
+        {status === 'erased' && <div className="notice-alert" aria-hidden>!</div>}
+        <h1 className="story-h2">{title}</h1>
+        <p className="story-lead">{lead}</p>
+        {status === 'erased' && erased && (
+          <div className="erased-card glass-dark">
+            <div className="erased-row"><span>{t.erasedId}</span><b>{erased.id}</b></div>
+            <div className="erased-row"><span>{t.erasedIssuer}</span><b>{erased.issuerName ?? shortHash(erased.issuer)}</b></div>
+            <a className="hb-tx" href={explorerAddress(erased.issuer)} target="_blank" rel="noreferrer"><IconLink size={12} /> {t.viewOnChain}</a>
+          </div>
+        )}
       </div>
     </div>
   )
