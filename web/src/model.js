@@ -48,9 +48,12 @@ export function buildItems({ items, events, ships, products, businesses }) {
         loc: e.payload?.location ?? null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null,
       })),
       custody: custodyOf(evs, biz, Number(r.weight_kg)),
+      sold: evs.some((e) => e.type === 'sell'),
     }
   }
   for (const it of Object.values(out)) if (it.parent && out[it.parent]) out[it.parent].children.push(it.id)
+  // まとめて発行した加工品は同じ時刻で登録されるので、ID の順に並べる
+  for (const it of Object.values(out)) it.children.sort()
   return out
 }
 

@@ -51,7 +51,7 @@ const photoBody = (photo) => (photo ? { photo: { base64: photo.base64, mediaType
 // ---- 書き込み（record-event） ----
 async function recordEvent(body) {
   // 記録した場所：受け取り・販売開始のときだけ取る（取れなければ付けない。Edge Function が登録住所との距離を添える）
-  const needLocation = body.type === 'receive' || body.type === 'sell'
+  const needLocation = body.type === 'receive' || body.type === 'sell' || body.batch?.[0]?.type === 'receive' || body.batch?.[0]?.type === 'sell'
   const location = needLocation ? await currentPosition() : null
   const { data, error } = await supabase.functions.invoke('record-event', { body: location ? { ...body, location } : body })
   if (error) {
@@ -80,15 +80,38 @@ export function appendEvent(itemId, type, detail, photo) {
 // 加工して子IDを発行：親に process を記録し、子の数だけ born を記録する
 // lots = [{ id, quantity, unitKg }]：ロットごとにパック数と1パックの重さ（総重量はサーバーが計算）
 export async function processItem({ parent, childIds, productId, name, lots, photo }) {
-  let last = await recordEvent({ itemId: parent.id, type: 'process', payload: { detail: `子ID ${childIds.length}件を発行（${name}）`, children: childIds } })
-  for (const [i, id] of childIds.entries()) {
-    last = await recordEvent({
-      itemId: id, parentId: parent.id, type: 'born', ...photoBody(photo),
-      newItem: { kind: 'product', species: parent.species, name, product_id: productId ?? null, quantity: lots[i].quantity, unit_kg: lots[i].unitKg },
-      payload: { detail: lots[i].quantity > 1 ? `親ID ${parent.id} から発行（${lots[i].quantity}パック）` : `親ID ${parent.id} から発行`, weight_kg: Math.round(lots[i].quantity * lots[i].unitKg * 100) / 100 },
-    })
+  await recordEvent({ itemId: parent.id, type: 'process', payload: { detail: `子ID ${childIds.length}件を発行（${name}）`, children: childIds } })
+  // 子IDの発行はまとめて送る（Edge Function への呼び出しは最大100件ごとに1回）
+  const entries = childIds.map((id, i) => ({
+    itemId: id, parentId: parent.id, type: 'born',
+    newItem: { kind: 'product', species: parent.species, name, product_id: productId ?? null, quantity: lots[i].quantity, unit_kg: lots[i].unitKg },
+    payload: { detail: lots[i].quantity > 1 ? `親ID ${parent.id} から発行（${lots[i].quantity}パック）` : `親ID ${parent.id} から発行`, weight_kg: Math.round(lots[i].quantity * lots[i].unitKg * 100) / 100 },
+  }))
+  return sendBatch(entries, photo)
+}
+
+// まとめて記録する（同じ種類の加工・引き渡し・受け取りだけ）。100件ずつに分けて送る
+async function sendBatch(entries, photo) {
+  let last = null
+  for (let i = 0; i < entries.length; i += 100) {
+    last = await recordEvent({ batch: entries.slice(i, i + 100), ...(i === 0 ? photoBody(photo) : {}) })
   }
   return last
+}
+
+// 加工品をまとめて引き渡す：rows = [{ id, kg }]
+export function handoverMany({ rows, toId, detail }) {
+  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'ship', payload: { detail, toId, weight_kg: r.kg } })))
+}
+
+// 加工品をまとめて販売を始める：ids と売場での表示名
+export function sellMany({ ids, displayName }) {
+  return sendBatch(ids.map((id) => ({ itemId: id, type: 'sell', payload: { detail: `売場の表示：${displayName}`, display_name: displayName } })))
+}
+
+// 加工品をまとめて受け取る：rows = [{ id, kg }]
+export function receiveMany({ rows, detail }) {
+  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg } })))
 }
 
 // 引き渡す（せり結果・出荷）：渡す相手の事業者を指定する。相手が受け取ると持ち主が移る

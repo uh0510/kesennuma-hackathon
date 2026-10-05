@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createPortal } from 'react-dom'
 import '@mantine/core/styles.css'
 import '@mantine/notifications/styles.css'
 import './styles.css'
@@ -14,13 +15,13 @@ import {
   IconFish, IconSearch, IconPlus, IconCut, IconQrcode, IconShieldCheck, IconSailboat, IconAnchor, IconGavel,
   IconPackage, IconTruck, IconSnowflake, IconPencil, IconCornerDownRight, IconUserSearch, IconDatabase,
   IconAlertTriangle, IconTag, IconLogin, IconLogout, IconLink, IconChevronRight, IconChevronLeft, IconUserCircle,
-  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin, IconPackageImport, IconPackageExport, IconBuildingStore, IconArrowRight,
+  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin, IconPackageImport, IconPackageExport, IconBuildingStore, IconArrowRight, IconPrinter,
 } from '@tabler/icons-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll,
-  registerIndividual, appendEvent, processItem, activateQr, explorerTx, handover, receiveItem, startSale,
+  registerIndividual, appendEvent, processItem, activateQr, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
@@ -69,7 +70,7 @@ const SPECIES_CODES = { 'メカジキ': 'SWO', 'ヨシキリザメ': 'SHK', 'メ
 const AREAS = ['北西太平洋（FAO 61）', '三陸沖']
 const MOBILE = '(max-width: 47.99em)'
 
-const qrUrl = (id) => `${location.origin}${location.pathname}?id=${encodeURIComponent(id)}`
+const qrUrl = (id, pack) => `${location.origin}${location.pathname}?id=${encodeURIComponent(id)}${pack ? `&pack=${pack}` : ''}`
 // 記録できたことを知らせる。チェーンへの記録だけ失敗したときは、そのことも伝える
 const notifyRecorded = (title, r) => {
   const geo = r?.locationError ? `（位置は記録できませんでした：${r.locationError}）` : ''
@@ -168,7 +169,7 @@ function BigNumber({ label, value, onChange, unit, steps = [1, 10], min = 0, dec
 // 今どこまで進んだか（記録の種類から判定）
 const STAGES = {
   ind: [['landing', '水揚げ', IconAnchor], ['auction', 'せり', IconGavel], ['receive', '受け取り', IconPackageImport], ['process', '加工', IconCut]],
-  prod: [['born', '発行', IconCornerDownRight], ['activate', 'ラベル', IconTag], ['ship', '出荷', IconTruck], ['sell', '販売', IconBuildingStore]],
+  prod: [['born', '発行', IconCornerDownRight], ['ship', '出荷', IconTruck], ['receive', '受け取り', IconPackageImport], ['sell', '販売', IconBuildingStore]],
 }
 function Stages({ it }) {
   const done = new Set(it.events.map((e) => e.type))
@@ -387,7 +388,7 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
 }
 
 // ラベルのQR（貼るまでは薄く表示し、有効化ボタンを出す）
-function QrBlock({ it, busy, onActivate, size = 112, onBand = false }) {
+function QrBlock({ it, busy, onActivate, onPrint, size = 112, onBand = false }) {
   return (
     <Stack align="center" gap={8}>
       <Paper p={8} radius="md" shadow={onBand ? 'md' : undefined} style={{ background: 'white' }}>
@@ -398,11 +399,57 @@ function QrBlock({ it, busy, onActivate, size = 112, onBand = false }) {
         : onActivate
           ? <Button size="xs" variant={onBand ? 'white' : 'light'} leftSection={<IconTag size={14} />} loading={busy} onClick={onActivate}>貼ったので有効化</Button>
           : <Badge variant={onBand ? 'white' : 'light'} color="gray">QR 未有効</Badge>}
+      {onPrint && (
+        <Button size="compact-xs" variant={onBand ? 'white' : 'subtle'} leftSection={<IconPrinter size={13} />} onClick={onPrint}>
+          {it.qty > 1 ? `ラベルを印刷（${it.qty}枚）` : 'ラベルを印刷'}
+        </Button>
+      )}
     </Stack>
   )
 }
 
-function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, me }) {
+// ==== ラベルの印刷 ====
+// 画面には出さない印刷用の用紙。印刷するときだけ表示する（styles.css の @media print）
+// ブラウザからはプリンターがつながっているか分からないので、印刷の画面を開くだけ（つながっていなければ PDF に保存できる）
+function PrintSheet({ job, items }) {
+  if (!job) return null
+  const labels = job.flatMap((it) => (it.qty > 1 ? Array.from({ length: it.qty }, (_, i) => ({ it, pack: i + 1 })) : [{ it, pack: null }]))
+  return createPortal(
+    <div className="print-sheet" aria-hidden>
+      {labels.map(({ it, pack }) => {
+        const root = rootOf(items, it.id)
+        return (
+          <div className="print-label" key={`${it.id}-${pack ?? 0}`}>
+            <QRCodeSVG value={qrUrl(it.id, pack)} size={88} />
+            <div className="print-label-text">
+              <div className="pl-brand">{BRAND.ja} {BRAND.en} · 気仙沼</div>
+              <div className="pl-name">{it.name}</div>
+              <div className="pl-weight">{it.qty > 1 && it.unitKg ? gram(it.unitKg) : `${it.kg} kg`}{pack ? `　${pack} / ${it.qty}` : ''}</div>
+              <div className="pl-origin">{root.species} · {root.info.shipName ?? ''}</div>
+              <div className="pl-id">{it.id}</div>
+            </div>
+          </div>
+        )
+      })}
+    </div>,
+    document.body,
+  )
+}
+
+// 印刷する対象を受け取り、用紙を描いてから印刷の画面を開く
+function usePrintLabels() {
+  const [job, setJob] = useState(null)
+  useEffect(() => {
+    if (!job) return
+    const done = () => setJob(null)
+    window.addEventListener('afterprint', done)
+    const t = setTimeout(() => window.print(), 100) // 用紙が描かれてから開く
+    return () => { clearTimeout(t); window.removeEventListener('afterprint', done) }
+  }, [job])
+  return [job, setJob]
+}
+
+function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, me, onPrint }) {
   const [tab, setTab] = useState('info')
   useEffect(() => setTab('info'), [it.id])
   const anc = ancestors(items, it.id)
@@ -417,8 +464,19 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
   const isHolder = !!myId && cu.holder === myId
   const isRecipient = !!myId && cu.pending === myId
   const canAct = !myId || (isHolder && !cu.pending)
-  // この親から作られた加工品のうち、自分宛てに引き渡し中のもの
+  // 加工品が今どこにあるか（持ち主ごと・引き渡し中ごとの数）
+  const kidsWhere = (() => {
+    const g = {}
+    for (const id of it.children) {
+      const c = items[id].custody
+      const label = c.pending ? `${c.pendingName}へ引き渡し中` : items[id].sold ? `${c.holderName}で販売中` : `${c.holderName}が保有`
+      g[label] = (g[label] ?? 0) + 1
+    }
+    return Object.entries(g).map(([label, count]) => ({ label, count }))
+  })()
+  // この親から作られた加工品のうち、自分宛てに引き渡し中のもの／自分が持っていてまだ販売していないもの
   const inboxKids = myId ? it.children.map((id) => items[id]).filter((k) => k.custody.pending === myId) : []
+  const myKids = myId ? it.children.map((id) => items[id]).filter((k) => k.custody.holder === myId && !k.custody.pending && !k.sold && k.children.length === 0) : []
 
   return (
     <Stack gap="lg" className="fadein" key={it.id}>
@@ -447,14 +505,20 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               </div>
               <Text size="xs" ff="monospace" c="rgba(255,255,255,0.85)" style={{ wordBreak: 'break-all' }}>{it.id}</Text>
             </Stack>
-            {!isMobile && <QrBlock it={it} busy={busy} onActivate={canAct ? activate : null} size={104} onBand />}
+            {!isMobile && <QrBlock it={it} busy={busy} onActivate={canAct ? activate : null} onPrint={() => onPrint([it])} size={104} onBand />}
           </Group>
         </div>
         <Box p={isMobile ? 'md' : 'lg'}>
           <Stages it={it} />
           {it.parent && <Text size="sm" c="dimmed" mb="sm">親ID <Anchor ff="monospace" size="sm" onClick={() => setSel(it.parent)}>{it.parent}</Anchor></Text>}
           <div className="custody-bar">
-            <Text size="sm"><Text span c="dimmed">今の持ち主 </Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
+            <Text size="sm"><Text span c="dimmed">{it.children.length ? '元の1尾の持ち主 ' : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
+            {kidsWhere.length > 0 && (
+              <Text size="sm" className="custody-kids">
+                <Text span c="dimmed">加工品 {it.children.length}ロット：</Text>
+                {kidsWhere.map((w, i) => <Text span key={w.label} fw={600}>{i ? '、' : ''}{w.label} {w.count}</Text>)}
+              </Text>
+            )}
             {cu.pending && (
               <Text size="sm" className="custody-pending"><IconArrowRight size={14} style={{ verticalAlign: -2 }} /> <Text span fw={700}>{cu.pendingName}</Text> へ引き渡し中（受け取り待ち）</Text>
             )}
@@ -464,6 +528,12 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               加工品を受け取る（{inboxKids.length}ロット・合計 {inboxKids.reduce((n, k) => n + k.custody.lastKg, 0).toFixed(1)} kg）
             </Button>
           )}
+          {myKids.length > 0 && !isHolder && (
+            <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm" mb="sm">
+              <Button leftSection={<IconBuildingStore size={18} />} onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>
+              <Button leftSection={<IconPackageExport size={18} />} variant="light" onClick={() => open('bulk')}>加工品を引き渡す</Button>
+            </SimpleGrid>
+          )}
           {isRecipient ? (
             <Button fullWidth size="lg" leftSection={<IconPackageImport size={20} />} onClick={() => open('receive')}>{cu.holderName} から受け取る</Button>
           ) : canAct && it.children.length > 0 ? (
@@ -471,6 +541,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               <Text size="sm" c="dimmed">加工済みです（加工品 {it.children.length}ロット）。引き渡しはロットごとに記録します。</Text>
               <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm">
                 <Button leftSection={<IconPackageExport size={18} />} onClick={() => open('bulk')}>加工品を引き渡す</Button>
+                {myKids.length > 0 && <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>}
                 <Button leftSection={<IconCut size={18} />} variant="light" onClick={() => open('process')}>残りを加工する</Button>
                 <Button leftSection={<IconPlus size={18} />} variant="light" onClick={() => open('add')}>情報を追記</Button>
               </SimpleGrid>
@@ -493,7 +564,13 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           ) : (
             <Text size="sm" c="dimmed" className="custody-note">この魚を今持っているのは {cu.holderName} です。加工・引き渡し・販売を記録できるのは持ち主だけです。</Text>
           )}
-          {isMobile && <Box mt="lg"><QrBlock it={it} busy={busy} onActivate={canAct ? activate : null} size={104} /></Box>}
+          {it.children.length > 0 && (
+            <Button mt="sm" variant="subtle" size="xs" leftSection={<IconPrinter size={14} />}
+              onClick={() => onPrint(it.children.map((id) => items[id]))}>
+              加工品のラベルを印刷（{it.children.length}ロット・{it.children.reduce((n, id) => n + items[id].qty, 0)}枚）
+            </Button>
+          )}
+          {isMobile && <Box mt="lg"><QrBlock it={it} busy={busy} onActivate={canAct ? activate : null} onPrint={() => onPrint([it])} size={104} /></Box>}
         </Box>
       </Card>
 
@@ -568,6 +645,14 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
 function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane, setPane, me }) {
   const isMobile = useIsMobile()
   const [busy, setBusy] = useState(false)
+  const [printJob, setPrintJob] = usePrintLabels()
+  // 加工したあとに印刷する：読み直しで新しいロットが一覧に入ってから印刷の画面を開く
+  const [printAfterIds, setPrintAfterIds] = useState(null)
+  useEffect(() => {
+    if (!printAfterIds || !printAfterIds.every((id) => items[id])) return
+    setPrintJob(printAfterIds.map((id) => items[id]))
+    setPrintAfterIds(null)
+  }, [items, printAfterIds])
   const roots = Object.values(items).filter((x) => !x.parent)
   const it = items[sel] ?? roots[0]
 
@@ -597,7 +682,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
   const canRegister = !me || me.business?.role === 'market'
   const list = <ItemList items={items} currentRoot={it && rootOf(items, it.id).id} onPick={pick} onRegister={canRegister ? () => open('register') : null} onScan={() => setModal('scan')} isMobile={isMobile} inbox={inbox} />
   const detail = it
-    ? <Detail items={items} it={it} setSel={setSel} busy={busy} open={open} run={run} guard={guard} isMobile={isMobile} onBack={() => setPane('list')} me={me} />
+    ? <Detail items={items} it={it} setSel={setSel} busy={busy} open={open} run={run} guard={guard} isMobile={isMobile} onBack={() => setPane('list')} me={me} onPrint={setPrintJob} />
     : (
       <Card><Center mih={260}><Stack align="center" gap="xs">
         <KindIcon kind="ind" size={56} />
@@ -627,6 +712,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
 
   return (
     <>
+      <PrintSheet job={printJob} items={items} />
       {hero}
       <div className="mgr-overlap">
         {isMobile
@@ -645,21 +731,18 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
         <AddInfoModal opened={modal === 'add'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(type, detail, photo) => run(() => appendEvent(it.id, type, detail, photo), (r) => notifyRecorded('追記しました', r))} />
         <ProcessModal key={it.id + (modal === 'process')} opened={modal === 'process'} onClose={() => setModal(null)} item={it} items={items} products={db.products} busy={busy}
-          onSave={(f) => run(() => processItem({ parent: it, ...f }), (r) => notifyRecorded(`${f.childIds.length}ロット（${f.lots.reduce((n, l) => n + l.quantity, 0)}パック）を発行し、親ID ${it.id} を紐づけました`, r))} />
+          onSave={(f) => run(() => processItem({ parent: it, ...f }), (r) => {
+            notifyRecorded(`${f.childIds.length}ロット（${f.lots.reduce((n, l) => n + l.quantity, 0)}パック）を発行し、親ID ${it.id} を紐づけました`, r)
+            if (f.printAfter) setPrintAfterIds(f.childIds)
+          })} />
         <HandoverModal key={`h-${it.id}-${modal === 'handover'}`} opened={modal === 'handover'} onClose={() => setModal(null)} item={it} businesses={db.businesses} myId={me?.business?.id} myRole={me?.business?.role} busy={busy}
           onSave={(f) => run(() => handover({ itemId: it.id, ...f }), (r) => notifyRecorded('引き渡しを記録しました（相手が受け取ると持ち主が移ります）', r))} />
         <BulkHandoverModal key={`b-${it.id}-${modal === 'bulk'}`} opened={modal === 'bulk'} onClose={() => setModal(null)} item={it} items={items} businesses={db.businesses} myId={me?.business?.id} myRole={me?.business?.role} busy={busy}
-          onSave={(f) => run(async () => {
-            let last = null
-            for (const id of f.ids) last = await handover({ itemId: id, kind: 'ship', toId: f.toId, weightKg: items[id].kg, detail: f.detail || '出荷' })
-            return last
-          }, (r) => notifyRecorded(`加工品 ${f.ids.length}ロット（合計 ${f.totalKg.toFixed(1)}kg）の引き渡しを記録しました`, r))} />
+          onSave={(f) => run(() => handoverMany({ rows: f.ids.map((id) => ({ id, kg: items[id].custody.lastKg })), toId: f.toId, detail: f.detail || '出荷' }), (r) => notifyRecorded(`加工品 ${f.ids.length}ロット（合計 ${f.totalKg.toFixed(1)}kg）の引き渡しを記録しました`, r))} />
         <BulkReceiveModal key={`br-${it.id}-${modal === 'bulkReceive'}`} opened={modal === 'bulkReceive'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} busy={busy}
-          onSave={(f) => run(async () => {
-            let last = null
-            for (const r of f.rows) last = await receiveItem({ itemId: r.id, weightKg: r.kg, detail: f.detail })
-            return last
-          }, (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
+          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail }), (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
+        <BulkSellModal key={`bs-${it.id}-${modal === 'bulkSell'}`} opened={modal === 'bulkSell'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} busy={busy}
+          onSave={(f) => run(() => sellMany(f), (r) => notifyRecorded(`加工品 ${f.ids.length}ロットの販売開始を記録しました`, r))} />
         <ReceiveModal key={`r-${it.id}-${modal === 'receive'}`} opened={modal === 'receive'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(f) => run(() => receiveItem({ itemId: it.id, ...f }), (r) => notifyRecorded('受け取りを記録しました。持ち主があなたに移りました', r))} />
         <SellModal key={`s-${it.id}-${modal === 'sell'}`} opened={modal === 'sell'} onClose={() => setModal(null)} item={it} busy={busy}
@@ -844,6 +927,47 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, busy, onSave }) 
   )
 }
 
+// 加工品をまとめて販売を始める：売るロットを選び、売場での表示名を入れる
+function BulkSellModal({ opened, onClose, item, items, myId, busy, onSave }) {
+  const kids = item.children.map((id) => items[id]).filter((k) => k.custody.holder === myId && !k.custody.pending && !k.sold && k.children.length === 0)
+  const [picked, setPicked] = useState(() => new Set(kids.map((k) => k.id)))
+  const [displayName, setDisplayName] = useState(kids[0]?.name ?? item.name)
+  const sel = kids.filter((k) => picked.has(k.id))
+  const packs = sel.reduce((n, k) => n + k.qty, 0)
+  const toggle = (id) => setPicked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  return (
+    <Sheet opened={opened} onClose={onClose} title="加工品の販売を始める">
+      <Stack gap="lg">
+        <div>
+          <Group justify="space-between" mb={8}>
+            <Text className="field-label" mb={0}>販売するロットを選ぶ</Text>
+            <Text size="sm" fw={700}>{sel.length}ロット{packs > sel.length ? `（${packs}パック）` : ''}</Text>
+          </Group>
+          <div className="inset-list glass">
+            {kids.map((k) => (
+              <UnstyledButton key={k.id} className="list-row" data-active={picked.has(k.id) || undefined} onClick={() => toggle(k.id)}>
+                <Checkbox checked={picked.has(k.id)} readOnly tabIndex={-1} />
+                <ItemAvatar it={k} size={32} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <Text size="sm" fw={600} truncate>{k.name}　{k.kg} kg{lotLabel(k) && `（${lotLabel(k)}）`}</Text>
+                  <Text size="xs" ff="monospace" c="dimmed" truncate>{k.id}</Text>
+                </div>
+              </UnstyledButton>
+            ))}
+          </div>
+        </div>
+        <TextInput label="売場での表示名" description={`値札やラベルに書く名前（元の魚種：${item.species}）`} value={displayName} onChange={(e) => setDisplayName(e.currentTarget.value)} />
+        <GeoStatus opened={opened} />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>やめる</Button>
+          <Button loading={busy} disabled={sel.length === 0 || !displayName} leftSection={<IconBuildingStore size={18} />}
+            onClick={() => onSave({ ids: sel.map((k) => k.id), displayName })}>{sel.length ? `${sel.length}ロットの販売を始める` : 'ロットを選んでください'}</Button>
+        </Group>
+      </Stack>
+    </Sheet>
+  )
+}
+
 // 受け取る：重さを量って入れる。場所も記録する
 function ReceiveModal({ opened, onClose, item, busy, onSave }) {
   const [kg, setKg] = useState(item.custody.lastKg)
@@ -926,6 +1050,7 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
   const [perLot, setPerLot] = useState(small ? 10 : 1)
   const [lotCount, setLotCount] = useState(small ? 1 : 4)
   const [photo, setPhoto] = useState(null)
+  const [printAfter, setPrintAfter] = useState(true)
   const product = choices.find((p) => p.id === productId)
   const n = Number(lotCount) || 0
   const q = Math.max(1, Math.trunc(Number(perLot) || 1))
@@ -965,10 +1090,8 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
             : <TextInput value={customName} onChange={(e) => setCustomName(e.currentTarget.value)} aria-label="加工品の名前" />}
         </div>
         <BigNumber label="1パック（1個）の重さ" value={unit} onChange={setUnit} unit="kg" steps={u < 1 ? [0.05, 0.1] : [1, 5]} min={0.01} decimals={u < 1 ? 3 : 1} />
-        <SimpleGrid cols={{ base: 1, sm: 2 }}>
-          <BigNumber label="1ロットのパック数" value={perLot} onChange={setPerLot} unit="パック" steps={[1, 10]} min={1} decimals={0} />
-          <BigNumber label="ロットの数（発行するID）" value={lotCount} onChange={setLotCount} unit="ロット" steps={[1]} min={1} decimals={0} />
-        </SimpleGrid>
+        <BigNumber label="1ロットのパック数" value={perLot} onChange={setPerLot} unit="パック" steps={[1, 10]} min={1} decimals={0} />
+        <BigNumber label="ロットの数（発行するID）" value={lotCount} onChange={setLotCount} unit="ロット" steps={[1, 10]} min={1} decimals={0} />
         <Text size="sm" fw={600}>{n}ロット × {q}パック × {gram(u)} ＝ 合計 {check.total.toFixed(1)} kg（1ロット {lotKg} kg）</Text>
         {/* 親の重量に対して、子の合計がどれだけか */}
         <div>
@@ -981,11 +1104,13 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
           <Alert key={i.message} radius="md" color={i.level === 'error' ? 'red' : i.level === 'warning' ? 'yellow' : 'apple'} variant="light" icon={<IconAlertTriangle size={18} />}>{i.message}</Alert>
         ))}
         <PhotoPicker value={photo} onChange={setPhoto} label="加工品の写真" hint="撮らなくても、元の1尾の写真が消費者の画面に出ます" />
+        <Checkbox checked={printAfter} onChange={(e) => setPrintAfter(e.currentTarget.checked)} size="md"
+          label={`発行したらラベルを印刷する（${n}ロット × ${q}パック ＝ ${n * q}枚）`} />
         <Text size="sm" c="dimmed">ロットごとに子ID（{ids[0]} …）を発行し、すべてに親IDを持たせます。パックのQRは「ロットのID＋連番」で、どのパックからも元の1尾までたどれます。魚種・漁船・海域などは親から自動で引き継ぎます。</Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button leftSection={<IconCut size={18} />} loading={busy} disabled={!check.ok || n < 1 || !name || !(u > 0)}
-            onClick={() => onSave({ childIds: ids, productId: product?.id ?? null, name, lots: ids.map((id) => ({ id, quantity: q, unitKg: u })), photo })}>{n}ロットを発行</Button>
+            onClick={() => onSave({ childIds: ids, productId: product?.id ?? null, name, lots: ids.map((id) => ({ id, quantity: q, unitKg: u })), photo, printAfter })}>{n}ロットを発行</Button>
         </Group>
       </Stack>
     </Sheet>
@@ -1092,6 +1217,38 @@ function ScanModal({ opened, onClose, onFound }) {
   )
 }
 
+// ログイン画面（管理画面はログインした事業者だけが開ける。QRから開く消費者画面はログイン不要）
+function LoginPage() {
+  const isMobile = useIsMobile()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e?.preventDefault()
+    setBusy(true)
+    try { await signIn(email, password) } catch (err) { errMsg(err) } finally { setBusy(false) }
+  }
+  return (
+    <div className="login-page">
+      <div className="mgr-hero-glow" aria-hidden />
+      <form className="login-card fadein" onSubmit={submit}>
+        <Center w={56} h={56} mx="auto" style={{ borderRadius: 16, background: 'linear-gradient(135deg, #0a84ff, #0071e3 55%, #34c759)' }}><IconFish size={30} color="white" /></Center>
+        <Group gap={8} justify="center" align="baseline" mt="md">
+          <Title order={1} className="headline" fz={isMobile ? 30 : 34} style={{ letterSpacing: '0.04em' }}>{BRAND.ja}</Title>
+          <Text fw={600} size="sm" c="dimmed" style={{ letterSpacing: '0.14em' }}>{BRAND.en}</Text>
+        </Group>
+        <Text ta="center" size="sm" c="dimmed" mt={4} mb="xl">気仙沼で獲れた1尾ごとの戸籍。事業者の方はログインしてください</Text>
+        <Stack gap="md">
+          <TextInput label="メールアドレス" variant="default" radius="md" value={email} onChange={(e) => setEmail(e.currentTarget.value)} autoComplete="username" type="email" required />
+          <PasswordInput label="パスワード" variant="default" radius="md" value={password} onChange={(e) => setPassword(e.currentTarget.value)} autoComplete="current-password" required />
+          <Button type="submit" fullWidth size="lg" mt="sm" loading={busy} disabled={!email || !password} leftSection={<IconLogin size={18} />}>ログイン</Button>
+        </Stack>
+        <Text ta="center" size="xs" c="dimmed" mt="xl">消費者の方は、商品のラベルの QR を読むと履歴を見られます（ログインは不要です）</Text>
+      </form>
+    </div>
+  )
+}
+
 function LoginModal({ opened, onClose }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -1153,24 +1310,28 @@ function App() {
   const [db, setDb] = useState(null)
   const [loadErr, setLoadErr] = useState(null)
   const [me, setMe] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false) // ログイン状態を確かめ終えたか
   const [loginOpen, setLoginOpen] = useState(false)
   const [sel, setSel] = useState(qid)
   const [view, setView] = useState(qid ? 'consumer' : 'manage')
   const [pane, setPane] = useState('list') // スマホの管理画面：一覧 or 詳細
   const [modal, setModal] = useState(null) // 'register' | 'add' | 'process' | 'scan'
-  const showNav = !qid // QRから来た消費者には管理用の切り替えを見せない
+  // QRから来た消費者・ログインしていない人には、管理用の切り替えを見せない
+  const showNav = !qid && !!me
 
   const reload = useCallback(async () => {
     try { setDb(await fetchAll()); setLoadErr(null) } catch (e) { setLoadErr(e.message ?? String(e)) }
   }, [])
   useEffect(() => {
     reload()
-    fetchMe().then(setMe)
+    fetchMe().then((m) => { setMe(m); setAuthChecked(true) })
     // コールバックの中で Supabase を呼ぶと詰まることがあるので、次の処理に回す
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => setTimeout(() => fetchMe().then(setMe), 0))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => setTimeout(() => fetchMe().then((m) => { setMe(m); setAuthChecked(true) }), 0))
     return () => subscription.unsubscribe()
   }, [])
   const items = useMemo(() => (db ? buildItems(db) : null), [db])
+  // ログアウトしたら管理画面に戻す（消費者画面の切り替えもログインした人だけ）
+  useEffect(() => { if (authChecked && !me && !qid) setView('manage') }, [authChecked, me])
 
   // 記録する操作の前にログインと所属を確かめる
   const guard = (fn) => {
@@ -1202,6 +1363,10 @@ function App() {
       ? <ActionIcon variant="subtle" radius="xl" size="lg" onClick={() => setLoginOpen(true)} aria-label="ログイン"><IconLogin size={22} /></ActionIcon>
       : <Button variant="white" size="sm" leftSection={<IconLogin size={16} />} onClick={() => setLoginOpen(true)}>ログイン</Button>
 
+  // ログイン状態を確かめ終えるまで待つ。QRから来た消費者以外は、ログインしていなければログイン画面
+  if (!authChecked && !qid) return <Center mih="100dvh" bg="#09142c"><Loader color="white" /></Center>
+  if (!qid && !me) return <LoginPage />
+
   return (
     <AppShell className={view === 'consumer' ? 'dark-shell' : 'navy-shell'} header={{ height: isMobile ? 56 : 64 }} footer={{ height: 64, collapsed: !(isMobile && showNav) }}
       padding={0}>
@@ -1220,7 +1385,7 @@ function App() {
                 data={[{ value: 'manage', label: <Group gap={6} wrap="nowrap"><IconDatabase size={16} /><span>ID管理</span></Group> },
                   { value: 'consumer', label: <Group gap={6} wrap="nowrap"><IconUserSearch size={16} /><span>消費者が見る画面</span></Group> }]} />
             )}
-            {view === 'manage' && account}
+            {view === 'manage' && !qid && account}
           </Group>
         </Group>
       </AppShell.Header>

@@ -242,7 +242,9 @@ export function ConsumerView({ items, sel, setSel, demo }) {
   const leaves = all.filter((x) => x.children.length === 0)
   const cur = items[sel] ? sel : leaves.find((x) => x.kind === 'prod')?.id ?? leaves[0]?.id
   if (!cur) return <div className="story"><div className="story-empty">{STR[lang].empty}</div></div>
-  return <Story key={cur} items={items} cur={cur} all={all} setSel={setSel} demo={demo} lang={lang} setLang={setLang} />
+  // パックのラベルの QR には連番（?pack=）が付く
+  const pack = Number(new URLSearchParams(location.search).get('pack')) || null
+  return <Story key={cur} items={items} cur={cur} all={all} setSel={setSel} demo={demo} lang={lang} setLang={setLang} pack={pack} />
 }
 
 // 日本語と英語の切り替え
@@ -255,7 +257,7 @@ function LangToggle({ lang, setLang }) {
   )
 }
 
-function Story({ items, cur, all, setSel, demo, lang, setLang }) {
+function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const t = STR[lang]
   const tr = (x) => term(lang, x)
   const when = (d) => (lang === 'en' ? new Date(d).toLocaleString('en-US', { timeZone: 'Asia/Tokyo', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : mdhm(d))
@@ -338,7 +340,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang }) {
         <motion.h1 className="story-h1" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, ease, delay: 0.1 }}>{tr(it.name)}</motion.h1>
         <motion.p className="story-meta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.25 }}>
           {it.qty > 1 && it.unitKg
-            ? <>{t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, tr(root.info.shipName), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
+            ? <>{pack && pack <= it.qty ? t.packNo(pack, it.qty) : t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, tr(root.info.shipName), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
             : t.meta(it.kg, tr(root.info.shipName), tr(root.species), it.kind === 'prod')}
         </motion.p>
         <Seal verify={verify} t={t} />

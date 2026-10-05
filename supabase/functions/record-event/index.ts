@@ -1,6 +1,9 @@
 // Supabase Edge Function：追記を受け取り、ハッシュを計算してDBに保存し、チェーンに記録する
 // 呼び出し：POST /functions/v1/record-event
 //   { itemId, type, payload, parentId?, newItem?, photo? }   ※ Authorization ヘッダにログイン中のユーザーのトークン
+//   まとめて送る：{ batch: [{ itemId, type, payload, parentId?, newItem? }, ...], photo?, location? }
+//     加工（born）・引き渡し（ship / auction）・受け取り（receive）を、同じ種類だけまとめて1回で記録する。
+//     確認の決まりは1件ずつのときと同じ。チェーンは引き渡し・受け取りを recordBatch の1回の取引にまとめる
 //   photo = { base64, mediaType }。Storage（photos バケット）に保存し、写真の指紋を payload.photo に入れて記録の指紋に含める
 //   location = { lat, lng, accuracy }（記録した場所）。その時点の事業者の登録住所の座標と距離を添えて payload.location に入れる
 // 加工品（born）の魚種は、画面から送られた値ではなく親の魚種を使う（途中で魚種を書き換えられないように）
@@ -20,6 +23,7 @@ import { ethers } from 'npm:ethers@6'
 const ABI = [
   'function issue(bytes32 itemId, bytes32 parentId, bytes32 dataHash)',
   'function record(bytes32 itemId, bytes32 dataHash)',
+  'function recordBatch(bytes32[] itemIds, bytes32[] dataHashes)',
 ]
 
 function canonical(v: unknown): string {
@@ -100,9 +104,13 @@ async function sendWithRetry(wallet: ethers.Wallet, send: (nonce: number) => Pro
 // deno-lint-ignore no-explicit-any
 async function custody(supa: any, itemId: string) {
   const { data: evs } = await supa.from('events').select('type, actor, payload').eq('item_id', itemId).order('id')
+  return custodyOf(evs ?? [])
+}
+// deno-lint-ignore no-explicit-any
+function custodyOf(evs: any[]) {
   let holder: string | null = null, pending: string | null = null, lastKg: number | null = null
   const actors = new Set<string>()
-  for (const e of evs ?? []) {
+  for (const e of evs) {
     actors.add(e.actor)
     const kg = Number(e.payload?.weight_kg)
     if (Number.isFinite(kg) && kg > 0) lastKg = kg
@@ -162,10 +170,150 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
   return { kind: 'product', species: row.species, name: row.name, weight_kg: row.weight_kg, quantity: row.quantity, unit_kg: row.unit_kg, parent_id: parentId, product }
 }
 
+// ==== まとめて記録する（加工・引き渡し・受け取り） ====
+const BATCH_TYPES = ['born', 'ship', 'auction', 'receive', 'sell']
+const BATCH_MAX = 200
+const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId']
+const clean = (p: Record<string, unknown> = {}) => Object.fromEntries(Object.entries(p).filter(([k]) => !STRIP.includes(k)))
+
+// deno-lint-ignore no-explicit-any
+async function handleBatch(supa: any, actor: string, body: any) {
+  const list = body.batch as Array<{ itemId: string; type: string; payload?: Record<string, unknown>; parentId?: string | null; newItem?: Record<string, unknown> | null }>
+  if (!Array.isArray(list) || list.length === 0) throw new Error('まとめて記録する内容がありません')
+  if (list.length > BATCH_MAX) throw new Error(`一度にまとめて記録できるのは ${BATCH_MAX} 件までです`)
+  const type = list[0].type
+  if (!BATCH_TYPES.includes(type) || list.some((b) => b.type !== type)) throw new Error('まとめて記録できるのは、同じ種類の加工・引き渡し・受け取り・販売開始だけです')
+  const ids = list.map((b) => b.itemId)
+  if (new Set(ids).size !== ids.length) throw new Error('同じIDが2回含まれています')
+
+  // 対象の記録をまとめて読む（加工なら親、それ以外は対象のID）
+  const parentId = type === 'born' ? (list[0].parentId ?? null) : null
+  if (type === 'born' && (!parentId || list.some((b) => b.parentId !== parentId))) throw new Error('まとめて発行できるのは、同じ親から作る加工品だけです')
+  const readIds = type === 'born' ? [parentId] : ids
+  const { data: evs, error: re } = await supa.from('events').select('id, item_id, type, actor, payload, hash').in('item_id', readIds).order('id')
+  if (re) throw re
+  // deno-lint-ignore no-explicit-any
+  const byItem: Record<string, any[]> = {}
+  for (const e of evs ?? []) (byItem[e.item_id] ??= []).push(e)
+
+  // 受け渡しの鎖の確認（1件ずつのときと同じ決まり）
+  // deno-lint-ignore no-explicit-any
+  const extras: Record<string, any> = {}
+  let parentSpecies: string | null = null
+  if (type === 'born') {
+    const c = custodyOf(byItem[parentId!] ?? [])
+    if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。加工できるのは持ち主だけです`)
+    if (c.pending) throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで加工できません`)
+    const { data: parent } = await supa.from('items').select('species').eq('id', parentId).maybeSingle()
+    if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
+    parentSpecies = parent.species
+  } else {
+    // deno-lint-ignore no-explicit-any
+    let to: any = null
+    if (type === 'ship' || type === 'auction') {
+      const toId = list[0].payload?.toId
+      if (!toId || list.some((b) => b.payload?.toId !== toId)) throw new Error('まとめて引き渡すときは、同じ相手を指定してください')
+      if (toId === actor) throw new Error('自分自身には引き渡せません')
+      const { data } = await supa.from('businesses').select('id, name').eq('id', toId).maybeSingle()
+      if (!data) throw new Error('渡す相手の事業者が見つかりません')
+      to = { id: data.id, name: data.name }
+    }
+    if (type === 'ship' || type === 'auction' || type === 'sell') {
+      // 加工済み（子IDがある）のものは丸ごとは渡せない・売れない
+      const { data: kids } = await supa.from('items').select('parent_id').in('parent_id', ids).limit(1)
+      if (kids?.length) throw new Error(`${kids[0].parent_id} は加工済みです。加工品ごとに記録してください`)
+    }
+    const holderNames: Record<string, string> = {}
+    for (const b of list) {
+      const c = custodyOf(byItem[b.itemId] ?? [])
+      if (!byItem[b.itemId]) throw new Error(`${b.itemId} が見つかりません`)
+      if (type === 'receive') {
+        if (c.pending !== actor) throw new Error(`${b.itemId} の受け取り先はあなたではありません`)
+        holderNames[c.holder!] ??= await bizName(supa, c.holder)
+        const e: Record<string, unknown> = { from: { id: c.holder, name: holderNames[c.holder!] } }
+        const kg = Number(b.payload?.weight_kg)
+        if (Number.isFinite(kg) && kg > 0 && c.lastKg) e.weight_check = { prev_kg: c.lastKg, kg, diff_kg: Math.round((kg - c.lastKg) * 100) / 100 }
+        extras[b.itemId] = e
+      } else {
+        if (c.holder && c.holder !== actor) throw new Error(`${b.itemId} を今持っているのは ${await bizName(supa, c.holder)} です。記録できるのは持ち主だけです`)
+        if (type === 'sell' && c.pending) throw new Error(`${b.itemId} は引き渡し中です。受け取られるまで販売できません`)
+        extras[b.itemId] = type === 'sell' ? {} : { to }
+      }
+    }
+  }
+
+  // 写真（加工品に添えるときは1枚を全員で共有）と場所（受け取りのとき）
+  const photo = body.photo ? await savePhoto(supa, ids[0], body.photo) : null
+  const where = await locate(supa, actor, body.location ?? null)
+
+  // 加工品をまとめて作る
+  // deno-lint-ignore no-explicit-any
+  let snaps: Record<string, any> = {}
+  if (type === 'born') {
+    const rows = list.map((b) => ({ ...pickNewItem(b.newItem ?? {}, 'born', parentId), species: parentSpecies }))
+    const { error } = await supa.from('items').insert(rows.map((r, i) => ({ ...r, id: ids[i], parent_id: parentId, created_by: actor })))
+    if (error) throw error
+    const product = rows[0].product_id ? (await supa.from('products').select('name, storage, shelf_days').eq('id', rows[0].product_id).single()).data : null
+    snaps = Object.fromEntries(rows.map((r, i) => [ids[i], { kind: 'product', species: r.species, name: r.name, weight_kg: r.weight_kg, quantity: r.quantity, unit_kg: r.unit_kg, parent_id: parentId, product }]))
+  }
+
+  // 記録をまとめて作る（指紋は1件ずつ、直前の記録の指紋を含めて計算）
+  const t0 = Date.now()
+  const events = []
+  for (const [i, b] of list.entries()) {
+    let p: Record<string, unknown> = { ...clean(b.payload), ...(extras[b.itemId] ?? {}) }
+    if (photo) p = { ...p, photo }
+    if (where) p = { ...p, location: where }
+    if (snaps[b.itemId]) p = { ...p, item: snaps[b.itemId] }
+    const prevHash = byItem[b.itemId]?.at(-1)?.hash ?? null
+    const createdAt = new Date(t0 + i).toISOString()
+    const hash = await sha256Hex(canonical({ itemId: b.itemId, type, actor, payload: p, prevHash, createdAt }))
+    events.push({ item_id: b.itemId, type, actor, payload: p, prev_hash: prevHash, hash, created_at: createdAt })
+  }
+  const { data: saved, error: ie } = await supa.from('events').insert(events).select('id, item_id, hash')
+  if (ie) throw ie
+
+  // チェーンに記録（未設定ならDBだけ）。失敗しても DB の記録は残っているので ok で返す
+  const registry = Deno.env.get('REGISTRY_ADDRESS')
+  if (!registry) return { ok: true, count: saved.length, txHash: null }
+  try {
+    const keys = JSON.parse(Deno.env.get('ISSUER_KEYS') ?? '{}')
+    if (!keys[actor]) throw new Error(`事業者 ${actor} の署名鍵が ISSUER_KEYS にありません`)
+    const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(Deno.env.get('CHAIN_RPC_URL') ?? Deno.env.get('AMOY_RPC_URL')))
+    const reg = new ethers.Contract(registry, ABI, wallet)
+    let nonce = await wallet.getNonce('pending')
+    const byId = Object.fromEntries(saved.map((s: { item_id: string; id: number; hash: string }) => [s.item_id, s]))
+    let lastTx: string | null = null
+    if (type === 'born') {
+      // 発行は1件ずつの取引（コントラクトの都合）。確認を待たずに、通し番号を手元で数えて続けて送る
+      const parentKey = await itemKey(parentId!)
+      const sent: Array<{ id: number; tx: string }> = []
+      for (const id of ids) {
+        const tx = await reg.issue(await itemKey(id), parentKey, byId[id].hash, { nonce: nonce++, gasLimit: 250000 })
+        sent.push({ id: byId[id].id, tx: tx.hash })
+        lastTx = tx.hash
+      }
+      // 取引の番号の書き込みは最後にまとめて（送るたびに待たない）
+      await Promise.all(sent.map((s) => supa.from('events').update({ tx_hash: s.tx }).eq('id', s.id)))
+    } else {
+      // 引き渡し・受け取りは recordBatch の1回の取引にまとめる
+      const k = await Promise.all(ids.map((id) => itemKey(id)))
+      const tx = await reg.recordBatch(k, ids.map((id) => byId[id].hash), { nonce: nonce++, gasLimit: 80000 + 45000 * ids.length })
+      await supa.from('events').update({ tx_hash: tx.hash }).in('id', saved.map((s: { id: number }) => s.id))
+      lastTx = tx.hash
+    }
+    return { ok: true, count: saved.length, txHash: lastTx }
+  } catch (e) {
+    const reason = String((e as { shortMessage?: string })?.shortMessage ?? (e as Error)?.message ?? e)
+    return { ok: true, count: saved.length, txHash: null, chainError: reason }
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
-    const { itemId, type, payload = {}, parentId = null, newItem = null, photo = null, location = null } = await req.json()
+    const reqBody = await req.json()
+    const { itemId, type, payload = {}, parentId = null, newItem = null, photo = null, location = null } = reqBody
     const supa = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
     // 呼び出した人の事業者を特定
@@ -175,6 +323,9 @@ Deno.serve(async (req) => {
     const { data: member } = await supa.from('members').select('business_id').eq('user_id', user.id).maybeSingle()
     if (!member) return json({ ok: false, error: 'このユーザーはどの事業者にも所属していません' }, 403)
     const actor = member.business_id as string
+
+    // まとめて送られてきたとき
+    if (Array.isArray(reqBody.batch)) return json(await handleBatch(supa, actor, reqBody))
 
     // 水揚げ（個体IDの発行）は市場だけ
     if (type === 'landing') {
