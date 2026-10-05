@@ -80,6 +80,20 @@ async function recordEvent(body) {
   return { ...data, locationError: needLocation && !location ? positionError() : null }
 }
 
+// 水揚げの個体ID：prefix（KSN-魚種-日付-）に続く空いている連番。DB にあるIDに加えて、チェーンにすでにあるIDも飛ばす
+// （デモ前に DB を消しても、チェーンの記録は残る。同じIDを使うとチェーンの指紋と合わず「改ざんの疑い」になるため）
+export async function nextIndividualId(prefix, knownIds) {
+  const candidates = []
+  for (let seq = 1; candidates.length < 20; seq++) {
+    const id = prefix + String(seq).padStart(3, '0')
+    if (!knownIds.includes(id)) candidates.push(id)
+  }
+  if (!chainEnabled) return candidates[0]
+  const reg = new ethers.Contract(REGISTRY, ['function issuerOf(bytes32) view returns (address)'], new ethers.JsonRpcProvider(RPC))
+  const used = await Promise.all(candidates.map(async (id) => (await reg.issuerOf(await itemKey(id))) !== ethers.ZeroAddress))
+  return candidates.find((_, i) => !used[i]) ?? candidates.at(-1)
+}
+
 // 水揚げした個体を登録（個体IDを発行し、landing を記録）
 export function registerIndividual({ itemId, species, weightKg, shipId, catchArea, period, landedAt, photo }) {
   return recordEvent({

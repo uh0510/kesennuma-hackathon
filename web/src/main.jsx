@@ -21,7 +21,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
-  registerIndividual, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany,
+  registerIndividual, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextIndividualId,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
@@ -1125,8 +1125,19 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   // ID：KSN-魚種コード-水揚げ日(YYMMDD)-連番
   const today = new Date().toISOString()
   const prefix = `KSN-${SPECIES_CODES[species]}-${ymd(today).replaceAll('-', '').slice(2)}-`
-  const seq = Object.keys(items).filter((id) => id.startsWith(prefix) && !id.slice(prefix.length).includes('-')).length + 1
-  const itemId = prefix + String(seq).padStart(3, '0')
+  // 連番は空いているものを探す（チェーンにすでにあるIDも飛ばす）。チェーンに聞けないときは DB だけで決める
+  const known = Object.keys(items).filter((id) => id.startsWith(prefix)).sort().join(' ')
+  const [itemId, setItemId] = useState(null)
+  useEffect(() => {
+    if (!opened) return
+    let alive = true
+    const ids = known ? known.split(' ') : []
+    setItemId(null)
+    nextIndividualId(prefix, ids)
+      .catch(() => { let seq = 1; while (ids.includes(prefix + String(seq).padStart(3, '0'))) seq++; return prefix + String(seq).padStart(3, '0') })
+      .then((id) => alive && setItemId(id))
+    return () => { alive = false }
+  }, [opened, prefix, known])
   return (
     <Sheet opened={opened} onClose={onClose} title="水揚げした個体を登録">
       <Stack gap="lg">
@@ -1169,10 +1180,12 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         <TextInput label="漁獲期間" placeholder="例：9/20〜10/1" value={period} onChange={(e) => setPeriod(e.currentTarget.value)}
           styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
         <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真" hint="消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます" />
-        <LabelPreview itemId={itemId} species={species} kg={kg} shipName={ship?.name} />
+        {itemId
+          ? <LabelPreview itemId={itemId} species={species} kg={kg} shipName={ship?.name} />
+          : <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">番号を確かめています…</Text></Group>}
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
-          <Button loading={busy} disabled={!ship || !(Number(kg) > 0)} leftSection={<IconTag size={18} />}
+          <Button loading={busy} disabled={!ship || !itemId || !(Number(kg) > 0)} leftSection={<IconTag size={18} />}
             onClick={() => onSave({ itemId, species, weightKg: Number(kg), shipId: ship.id, catchArea: area, period, landedAt: today, photo })}>個体IDを発行</Button>
         </Group>
       </Stack>
