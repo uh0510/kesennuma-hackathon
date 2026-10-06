@@ -68,6 +68,16 @@
 .map-section::after { bottom: 0; background: linear-gradient(transparent, #000); }
 .map-note { position: absolute; z-index: 2; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--fg-3); }
 .journey-map .maplibregl-ctrl-attrib { display: none; }
+/* 地図の上の部品はぼかし（backdrop-filter）を使わない。地図は毎フレーム描き直すので、ぼかしがとても重くなる */
+.journey-wrap { position: relative; }
+.replay-cap { position: absolute; z-index: 3; left: 24px; bottom: 56px; display: flex; flex-direction: column; gap: 2px; max-width: min(80%, 520px);
+  padding: 12px 16px; border-radius: 14px; background: rgba(12, 12, 14, 0.82); border: 1px solid rgba(255, 255, 255, 0.12); }
+.replay-cap .replay-phase { font-size: 11px; letter-spacing: 0.14em; color: #ff9f0a; font-weight: 700; }
+.replay-cap b { font-size: 20px; font-weight: 700; color: #f5f5f7; font-variant-numeric: tabular-nums; }
+.replay-cap small { font-size: 12px; color: #a1a1a6; }
+.replay-btn { position: absolute; z-index: 3; right: 20px; bottom: 56px; padding: 8px 16px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(12, 12, 14, 0.82); color: #f5f5f7; font-size: 13px; font-weight: 600; cursor: pointer; }
+.replay-btn:hover { background: rgba(255, 255, 255, 0.12); }
 .map-pin.left { flex-direction: row-reverse; }
 .map-pin.below-left { flex-direction: column; align-items: flex-end; gap: 8px; }
 .map-pin.below { flex-direction: column; align-items: center; gap: 8px; }
@@ -78,7 +88,7 @@
 @keyframes pulse { from { transform: scale(1); opacity: 0.9 } to { transform: scale(3); opacity: 0 } }
 .map-pin .tag {
   display: flex; flex-direction: column; padding: 8px 12px; border-radius: 12px; color: #f5f5f7; font-size: 14px; white-space: nowrap;
-  background: rgba(28, 28, 30, 0.72); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(28, 28, 30, 0.9); border: 1px solid rgba(255, 255, 255, 0.12);
 }
 .map-pin .tag small { color: #a1a1a6; font-size: 11px; margin-top: 2px; }
 .map-pin .tag small + b { margin-top: 6px; }
@@ -127,10 +137,18 @@
 .chapter-line { color: var(--fg-2); font-size: 13px; margin: 3px 0 0; }
 
 /* 重さの内訳 */
-.weight-bar { display: flex; gap: 4px; height: 40px; margin-top: 28px; border-radius: 14px; overflow: hidden; }
-.weight-seg { flex-basis: 0; background: #3a3a3c; min-width: 0; }
-.weight-seg[data-current] { background: linear-gradient(135deg, #0a84ff, #64d2ff); box-shadow: 0 0 30px rgba(10, 132, 255, 0.6); }
-.weight-seg.rest { background: repeating-linear-gradient(45deg, #1c1c1e 0 8px, #2c2c2e 8px 16px); }
+.fish-main { margin-top: 24px; max-width: 680px; }
+.mix-inputs { max-width: 680px; }
+.fish-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.fish-seg { animation: fish-seg 700ms var(--ease-out, ease-out) both; }
+@keyframes fish-seg { from { opacity: 0; } to { opacity: 1; } }
+.mix-inputs { display: flex; gap: 16px; align-items: flex-end; margin-top: 24px; }
+.mix-input { flex-basis: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mix-input b { font-size: 13px; margin-top: 6px; color: var(--fg); }
+.mix-input small { font-size: 12px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.mix-merge { margin-top: 14px; font-size: 12px; color: var(--fg-2); letter-spacing: 0.02em; }
+.weight-legend .sw.cur { background: linear-gradient(135deg, #0a84ff, #64d2ff); }
+@media (prefers-reduced-motion: reduce) { .fish-seg { animation: none; } }
 .weight-legend { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 16px; font-size: 13px; color: var(--fg-2); }
 .weight-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 .sw.cur { background: #0a84ff; }

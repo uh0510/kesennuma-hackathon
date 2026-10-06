@@ -170,6 +170,13 @@ export function declareCatch({ species, catchArea, catchFrom, catchTo, estKg, es
   return recordEvent({ declare: { species, catchArea, catchFrom, catchTo, estKg, estCount }, ...photoBody(photo) })
 }
 
+// 漁船：自分の申告から水揚げされた魚と、そこから作られたもの（加工品・加工ロット）の記録の要点
+export async function fetchVesselFollowup() {
+  const { data, error } = await supabase.rpc('vessel_followup')
+  if (error) throw error
+  return data
+}
+
 // はかり：登録（ログインした事業者のはかりとして）と、登録の一覧
 export const registerScale = ({ address, name, sig }) => recordEvent({ registerScale: { address, name, sig } })
 export async function fetchScale(address) {

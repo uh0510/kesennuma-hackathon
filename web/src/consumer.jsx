@@ -118,13 +118,48 @@ function HeroPhoto({ main, sub, root, it, verify, t, lang }) {
   )
 }
 
-// 旅の地図：海域 → 気仙沼港 → 加工場。画面に入ったら線が伸びていく
+// 経度を前の点から 180 度以内にそろえる（太平洋をまたぐ線が地球の反対側を回らないように）
+function unwrap(points) {
+  const out = []
+  for (const [x, y] of points) {
+    let lon = x
+    const prev = out.at(-1)?.[0]
+    if (prev != null) while (lon - prev > 180) lon -= 360
+    if (prev != null) while (prev - lon > 180) lon += 360
+    out.push([lon, y])
+  }
+  return out
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+// 0 → 1 を ms かけて進める（毎フレーム onUpdate。stop() が true を返したらやめる）
+const smooth = (x) => (x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2)
+function tween(ms, onUpdate, { ease = smooth, stop = () => false } = {}) {
+  return new Promise((resolve) => {
+    const t0 = performance.now()
+    // 画面の描き替えを待たずにタイマーで進める（1秒に約30回。地図は setData のたびに描き直す）
+    const step = () => {
+      if (stop()) return resolve()
+      const x = Math.min(1, (performance.now() - t0) / ms)
+      onUpdate(ease(x))
+      if (x < 1) setTimeout(step, 33)
+      else resolve()
+    }
+    setTimeout(step, 33)
+  })
+}
+const day = (s) => new Date(s).toISOString().slice(0, 10)
+
+// 旅の地図（映像）：地球儀 → 漁をした海で、船の位置の記録が日付の順に灯る → 寄った港をたどる航海 → 水揚げ港・加工場・店へ飛ぶ → 全体
+// 画面に入ったら1回再生し、終わったら「もう一度見る」。船の位置の記録がない船は、海域の代表地点から始める
 function JourneyMap({ stops, t, ais }) {
   const box = useRef(null)
   const mapRef = useRef(null)
   const inView = useInView(box, { once: true, margin: '-120px' })
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(null)
+  const [cap, setCap] = useState(null) // 映像の字幕 { phase, main, sub }
+  const [playing, setPlaying] = useState(false)
+  const [run, setRun] = useState(0) // 再生の回数（もう一度見る）
 
   useEffect(() => {
     // WebGL が使えないブラウザでは地図を作れない。画面全体を落とさず、代わりの図を出す
@@ -132,9 +167,9 @@ function JourneyMap({ stops, t, ais }) {
     try {
       map = new maplibregl.Map({
         container: box.current, style: MAP_STYLE, interactive: false, attributionControl: { compact: true },
-        // 大西洋 → 日本のように範囲が広いと縮小しすぎて世界地図が横に何枚も並ぶので、世界1枚が横幅いっぱいになるところまでにする
-        minZoom: Math.max(0, Math.log2(box.current.clientWidth / 512)),
-        bounds: new maplibregl.LngLatBounds(stops[0].at, stops[0].at).extend(stops.at(-1).at), fitBoundsOptions: { padding: 90 },
+        center: stops[0].at, zoom: 0.8,
+        // 軽くする：高精細の画面でも描く細かさは 1.5 倍まで。文字のふわっと出る動きはなし
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5), fadeDuration: 0,
       })
     } catch (e) {
       console.error('地図を作れませんでした', e)
@@ -143,25 +178,33 @@ function JourneyMap({ stops, t, ais }) {
     }
     map.on('error', (e) => console.error('地図のエラー', e?.error ?? e))
     mapRef.current = map
+    map.on('style.load', () => {
+      // 地球儀で見せる（世界地図が横に何枚も並ばない）
+      try { map.setProjection({ type: 'globe' }) } catch { /* 古い仕組みでは平らな地図のまま */ }
+    })
     map.on('load', () => {
+      const empty = { type: 'FeatureCollection', features: [] }
+      map.addSource('ais-fishing', { type: 'geojson', data: empty })
+      map.addLayer({ id: 'ais-glow', type: 'circle', source: 'ais-fishing', filter: ['<=', ['get', 't'], 0],
+        paint: { 'circle-radius': 9, 'circle-color': '#ff9f0a', 'circle-opacity': 0.18, 'circle-blur': 1 } })
+      map.addLayer({ id: 'ais-fishing', type: 'circle', source: 'ais-fishing', filter: ['<=', ['get', 't'], 0],
+        paint: { 'circle-radius': 3.2, 'circle-color': '#ff9f0a', 'circle-opacity': 0.9 } })
       map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } })
       map.addLayer({ id: 'route-glow', type: 'line', source: 'route', paint: { 'line-color': '#0a84ff', 'line-width': 10, 'line-blur': 8, 'line-opacity': 0.55 }, layout: { 'line-cap': 'round' } })
       map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#64d2ff', 'line-width': 3 }, layout: { 'line-cap': 'round', 'line-join': 'round' } })
-      const b = new maplibregl.LngLatBounds()
-      stops.forEach((s) => b.extend(s.at))
+      map.addSource('head', { type: 'geojson', data: empty })
+      map.addLayer({ id: 'head', type: 'circle', source: 'head', paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': '#64d2ff', 'circle-stroke-width': 3 } })
       const wide = box.current.clientWidth > 700
-      map.fitBounds(b, { padding: wide ? { top: 160, bottom: 160, left: 260, right: 260 } : { top: 150, bottom: 150, left: 60, right: 60 }, duration: 0, maxZoom: 7 })
       // ラベルの出し方：右・左・左下（スマホでは横に並べると重なるので左下）。点の中心が地点に重なるよう基準をずらす
       const PLACE = { right: ['left', [-7, 0]], left: ['right', [7, 0]], 'below-left': ['top-right', [7, -7]], below: ['top', [0, -7]] }
       stops.forEach((s, i) => {
-        // 漁獲の海域は左（スマホは左下）。3つ目以降の地点は前の地点とラベルが重ならないよう、交互に左（スマホは下）へ
         const side = s.side === 'left' ? (wide ? 'left' : 'below-left') : i >= 2 && i % 2 === 0 ? (wide ? 'left' : 'below') : 'right'
         const el = document.createElement('div')
         el.className = `map-pin ${side}`
-        // 近い場所でいくつもの事業者を通ったときは、1つのピンに「事業者：やったこと」を並べる
         const lines = s.lines ?? [{ label: s.label, sub: s.sub }]
         el.innerHTML = `<span class="dot"></span><span class="tag">${lines.map((l) => `<b>${esc(l.label)}</b>${l.sub ? `<small>${esc(l.sub)}</small>` : ''}`).join('')}</span>`
-        new maplibregl.Marker({ element: el, anchor: PLACE[side][0], offset: PLACE[side][1] }).setLngLat(s.at).addTo(map)
+        // 地球儀の裏側に回った地点は出さない
+        new maplibregl.Marker({ element: el, anchor: PLACE[side][0], offset: PLACE[side][1], opacityWhenCovered: '0' }).setLngLat(s.at).addTo(map)
       })
       setReady(true)
     })
@@ -172,49 +215,133 @@ function JourneyMap({ stops, t, ais }) {
     }
   }, [stops.map((s) => `${s.at.join()}:${s.label}:${s.sub}`).join('|')])
 
+  // 再生：画面に入ったら1回。船の位置の記録が届くのを少しだけ待つ（届かなければ、ないものとして始める）
   useEffect(() => {
-    if (!ready || !inView || !box.current) return
-    const path = stops.slice(1).flatMap((s, i) => arc(stops[i].at, s.at).slice(i ? 1 : 0))
-    const pins = [...box.current.querySelectorAll('.map-pin')]
-    pins[0]?.classList.add('on')
-    const c = animate(0, 1, {
-      duration: 2.6, ease: [0.45, 0, 0.2, 1], delay: 0.3,
-      onUpdate: (t) => {
-        const n = Math.max(2, Math.round(t * path.length))
-        const map = mapRef.current
-        if (!map?.style) return // 画面を切り替えて地図が片付けられたあと
-        map.getSource('route')?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: path.slice(0, n) } })
-        // 線が届いた地点を光らせる
-        const seg = Math.floor(t * (stops.length - 1) + 0.02)
-        pins.forEach((p, i) => i <= seg && p.classList.add('on'))
-      },
-    })
-    return () => c.stop()
-  }, [ready, inView])
-
-  // 船の位置の記録（AIS）：漁をしたと見られる地点（橙）と入港した港（白）を、届いたら重ねる
-  useEffect(() => {
+    if (!ready || !inView) return
+    if (ais === null && run === 0) return // 読み込み中
     const map = mapRef.current
-    if (!ready || !ais?.linked || !map?.style) return
-    // 日付変更線をまたぐ海域（南太平洋など）は、経度を同じ側にそろえる（地図が地球一周に広がらないように）
-    const lon = (x) => (stops[0].at[0] > 90 && x < -90 ? x + 360 : x)
-    const fc = (pts) => ({ type: 'FeatureCollection', features: pts.filter((p) => p.lat != null && p.lon != null).map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon(p.lon), p.lat] } })) })
-    const add = (id, data, paint) => {
-      if (map.getSource(id)) return map.getSource(id).setData(data)
-      map.addSource(id, { type: 'geojson', data })
-      map.addLayer({ id, type: 'circle', source: id, paint }, 'route-glow')
-    }
-    add('ais-fishing', fc(ais.fishing), { 'circle-radius': 3.5, 'circle-color': '#ff9f0a', 'circle-opacity': 0.75, 'circle-blur': 0.3 })
-    add('ais-ports', fc(ais.ports), { 'circle-radius': 4, 'circle-color': '#f5f5f7', 'circle-stroke-color': '#000', 'circle-stroke-width': 1 })
-    const b = new maplibregl.LngLatBounds()
-    stops.forEach((s) => b.extend(s.at))
-    ais.fishing.forEach((p) => p.lat != null && b.extend([lon(p.lon), p.lat]))
-    const wide = box.current.clientWidth > 700
-    map.fitBounds(b, { padding: wide ? { top: 160, bottom: 160, left: 260, right: 260 } : { top: 150, bottom: 150, left: 60, right: 60 }, duration: 1200, maxZoom: 7 })
-  }, [ready, ais])
+    if (!map?.style) return
+    let alive = true
+    const ok = () => alive && mapRef.current === map && map.style
+    // カメラを動かして、止まるまで待つ。動かなかった・失敗したときも、決めた時間で先へ進む
+    const move = (fn, ...args) => new Promise((r) => {
+      if (!ok()) return r()
+      const ms = (args.at(-1)?.duration ?? 0) + 800
+      const done = () => { clearTimeout(timer); map.off('moveend', done); r() }
+      const timer = setTimeout(done, ms)
+      map.on('moveend', done)
+      try { map[fn](...args) } catch (e) { console.error('地図のカメラ', e); done() }
+    })
+    const pins = [...box.current.querySelectorAll('.map-pin')]
+    const setRoute = (coords) => map.getSource('route')?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords } })
+    const setHead = (p) => map.getSource('head')?.setData(p ? { type: 'Feature', geometry: { type: 'Point', coordinates: p } } : { type: 'FeatureCollection', features: [] })
+    const showUpTo = (ms) => ['ais-fishing', 'ais-glow'].forEach((id) => map.getLayer(id) && map.setFilter(id, ['<=', ['get', 't'], ms]))
+    // 線を少しずつ伸ばす（先頭に白い点、カメラは先頭を追う）
+    const draw = (base, path, ms, follow) => tween(ms, (v) => {
+      const n = Math.max(2, Math.round(v * path.length))
+      setRoute([...base, ...path.slice(0, n)])
+      setHead(path[n - 1])
+      if (follow) map.jumpTo({ center: path[n - 1] })
+    }, { stop: () => !ok() })
+
+    ;(async () => {
+      setPlaying(true)
+      try { map.setProjection({ type: 'globe' }) } catch { /* 平らな地図のまま */ }
+      pins.forEach((p) => p.classList.remove('on'))
+      setRoute([]); setHead(null); showUpTo(0)
+      const fishing = (ais?.linked ? ais.fishing : []).filter((p) => p.lat != null && p.lon != null)
+        .map((p) => ({ ...p, ms: new Date(p.start).getTime() })).sort((a, b) => a.ms - b.ms)
+      const area = stops[0].at
+      const pts = unwrap([area, ...fishing.map((p) => [p.lon, p.lat])]).slice(1)
+      map.getSource('ais-fishing')?.setData({ type: 'FeatureCollection', features: fishing.map((p, i) => ({ type: 'Feature', properties: { t: p.ms }, geometry: { type: 'Point', coordinates: pts[i] } })) })
+
+      // 1. 地球儀から、漁をした海へ
+      setCap({ phase: t.replayFishing, main: stops[0].sub ?? stops[0].label })
+      await move('jumpTo', { center: area, zoom: 0.8, pitch: 0, bearing: 0 })
+      await sleep(600)
+      const fb = new maplibregl.LngLatBounds(area, area)
+      pts.forEach((p) => fb.extend(p))
+      await move('fitBounds', fb, { padding: 90, maxZoom: 5, pitch: 25, duration: 2600 })
+      if (!ok()) return
+      pins[0]?.classList.add('on')
+
+      // 2. 船の位置の記録が、日付の順に灯る
+      if (fishing.length) {
+        const t0 = fishing[0].ms, t1 = fishing.at(-1).ms
+        await tween(Math.min(6000, 2000 + fishing.length * 25), (x) => {
+          const v = t0 + (t1 + 1 - t0) * x
+          showUpTo(v)
+          setCap({ phase: t.replayFishing, main: day(v), sub: t.replayFishCount(fishing.filter((p) => p.ms <= v).length) })
+        }, { ease: (x) => x, stop: () => !ok() })
+        await sleep(700)
+      }
+
+      // 3. 航海：漁の最後の地点から、寄った港をたどって水揚げ港へ
+      const land = stops[1]
+      const lastFish = pts.at(-1) ?? area
+      const ports = (ais?.linked ? ais.ports : []).filter((p) => p.lat != null && p.lon != null && (!fishing.length || new Date(p.start).getTime() >= fishing.at(-1).ms))
+      const seq = []
+      for (const p of ports) if (seq.at(-1)?.name !== p.name) seq.push(p)
+      const via = unwrap([lastFish, ...seq.map((p) => [p.lon, p.lat]), land?.at ?? lastFish])
+      const voyage = via.slice(1).flatMap((p, i) => arc(via[i], p, 40).slice(i ? 1 : 0))
+      if (land && voyage.length > 1) {
+        setCap({ phase: t.replayVoyage, main: seq.length ? seq.map((p) => p.name).join(' → ') : land.label })
+        await move('easeTo', { center: voyage[0], zoom: 2.4, pitch: 30, duration: 1200 })
+        await draw([], voyage, Math.min(9000, 3500 + seq.length * 900), true)
+        if (!ok()) return
+      }
+
+      // 4. 水揚げ港・加工場・店：斜めから寄って、1か所ずつ
+      let base = voyage
+      for (let i = 1; i < stops.length; i++) {
+        const s = stops[i]
+        if (i > 1) {
+          // 線の続き：前の線の最後の点から（経度のそろえ方を線全体で同じにする）
+          const leg = unwrap([base.at(-1) ?? stops[i - 1].at, s.at])
+          const path = arc(leg[0], leg[1], 40)
+          await move('flyTo', { center: path[Math.floor(path.length / 2)], zoom: Math.max(4, Math.min(8, 10 - Math.log2(1 + km(leg[0], leg[1]) / 20))), pitch: 35, bearing: -15 + i * 12, duration: 1600 })
+          await draw(base, path, 1500, false)
+          base = [...base, ...path]
+        }
+        if (!ok()) return
+        setCap({ phase: i === 1 ? t.replayLanded : t.replayStop, main: s.label, sub: s.sub })
+        pins[i]?.classList.add('on')
+        await move('flyTo', { center: s.at, zoom: 9.5, pitch: 40, bearing: -20 + i * 12, duration: 2000 })
+        await sleep(1300)
+      }
+
+      // 5. 全体を見渡す
+      if (!ok()) return
+      setHead(null)
+      // 地球の半分以上をまたぐ旅（大西洋 → パナマ → 日本）は地球儀だと裏側に隠れるので、全体は平らな地図で、太平洋をまたいで続けて見せる
+      try { map.setProjection({ type: 'mercator' }) } catch { /* そのまま */ }
+      const all = new maplibregl.LngLatBounds()
+      ;[...pts, ...base].forEach((p) => all.extend(p))
+      if (!base.length) stops.forEach((s) => all.extend(s.at))
+      const wide = box.current.clientWidth > 700
+      setCap(null)
+      await move('fitBounds', all, { padding: wide ? { top: 140, bottom: 140, left: 220, right: 220 } : { top: 130, bottom: 130, left: 50, right: 50 }, pitch: 0, bearing: 0, maxZoom: 7, duration: 2600 })
+      pins.forEach((p) => p.classList.add('on'))
+    })().finally(() => alive && setPlaying(false))
+    return () => { alive = false }
+  }, [ready, inView, ais === null, run])
 
   if (failed) return <MapFallback stops={stops} t={t} />
-  return <div ref={box} className="journey-map" />
+  return (
+    <div className="journey-wrap">
+      <div ref={box} className="journey-map" />
+      <AnimatePresence>
+        {cap && (
+          <motion.div key="cap" className="replay-cap" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
+            <span className="replay-phase">{cap.phase}</span>
+            <b>{cap.main}</b>
+            {cap.sub && <small>{cap.sub}</small>}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {ready && !playing && <button type="button" className="replay-btn" onClick={() => setRun((n) => n + 1)}>{t.replayAgain}</button>}
+    </div>
+  )
 }
 
 // 地図を表示できないときの代わりの図
@@ -250,7 +377,7 @@ function AisCheck({ root, ais, t, lang }) {
   return (
     <section className="story-section">
       <motion.div {...reveal}>
-        <div className="eyebrow-dark">CHECKED AGAINST VESSEL TRACKING</div>
+        <div className="eyebrow-dark">AIS CHECK</div>
         <h2 className="story-h2">{t.aisTitle}</h2>
         <p className="story-lead">{t.aisLead}</p>
       </motion.div>
@@ -282,7 +409,7 @@ function MixSources({ origins, inputKg, t, lang }) {
   return (
     <section className="story-section">
       <motion.div {...reveal}>
-        <div className="eyebrow-dark">WHAT WENT INTO THIS PRODUCT</div>
+        <div className="eyebrow-dark">INPUTS</div>
         <h2 className="story-h2">{t.mixTitle(origins.length)}</h2>
         <p className="story-lead">{t.mixLead}</p>
       </motion.div>
@@ -324,31 +451,106 @@ class MapBoundary extends React.Component {
   render() { return this.state.error ? <MapFallback stops={this.props.stops} t={this.props.t} /> : this.props.children }
 }
 
-// 1尾から生まれた加工品（重さの内訳）
+// 魚の形（横から見た姿・頭が左）。body＝切り分けて塗る部分、fins＝ひれ（塗らない）
+// 魚種ごとに形を変える：マグロ・カツオ類／メカジキ（くちばし）／ヨシキリザメ
+const FISH = {
+  tuna: {
+    vb: '0 0 400 160', x0: 18, x1: 396, eye: [44, 76],
+    body: 'M18,80 C30,58 80,40 160,37 C240,35 300,52 338,70 L362,58 L396,22 L384,80 L396,138 L362,102 L338,90 C300,108 240,124 160,123 C80,121 30,102 18,80 Z',
+    fins: ['M140,39 L172,6 L190,37 Z', 'M250,44 L268,24 L278,48 Z', 'M258,116 L274,140 L284,112 Z', 'M92,86 L152,100 L96,94 Z',
+      'M292,52 L298,42 L302,54 Z', 'M306,58 L312,48 L316,60 Z', 'M320,64 L326,54 L330,66 Z', 'M292,108 L298,118 L302,106 Z', 'M306,102 L312,112 L316,100 Z'],
+  },
+  sword: {
+    vb: '-64 0 464 160', x0: 18, x1: 396, eye: [40, 74],
+    body: 'M18,80 C30,62 80,50 160,48 C240,46 300,58 338,70 L362,58 L396,18 L384,80 L396,142 L362,102 L338,90 C300,104 240,114 160,114 C80,112 30,98 18,80 Z',
+    fins: ['M18,76 L-60,80 L18,84 Z', 'M80,54 L104,2 L136,50 Z', 'M96,94 L150,120 L102,102 Z', 'M270,100 L286,124 L294,98 Z'],
+  },
+  shark: {
+    vb: '0 0 400 160', x0: 8, x1: 394, eye: [40, 80],
+    body: 'M8,86 C26,68 90,54 170,54 C250,54 312,64 340,74 L394,16 L372,84 L390,112 L338,96 C300,108 240,118 170,118 C90,118 26,104 8,86 Z',
+    fins: ['M150,56 L184,8 L206,56 Z', 'M106,104 L150,148 L152,108 Z', 'M282,62 L292,46 L300,64 Z', 'M276,110 L288,126 L296,108 Z'],
+  },
+}
+const fishOf = (species) => (species === 'メカジキ' ? FISH.sword : species === 'ヨシキリザメ' ? FISH.shark : FISH.tuna)
+let fishSeq = 0
+
+// 魚の形を、重さの割合で頭から尾へ切り分けて塗る。segs＝[{ kg, fill, current? }]（rest＝端材は斜線）
+function FishSvg({ shape, segs, label }) {
+  const id = useMemo(() => `fish${++fishSeq}`, [])
+  const total = segs.reduce((n, s) => n + s.kg, 0) || 1
+  const W = shape.x1 - shape.x0
+  let x = shape.x0
+  const parts = segs.map((s) => { const w = (W * s.kg) / total; const p = { ...s, x, w }; x += w; return p })
+  return (
+    <svg viewBox={shape.vb} className="fish-svg" role="img" aria-label={label}>
+      <defs>
+        <clipPath id={`${id}-clip`}><path d={shape.body} /></clipPath>
+        <linearGradient id={`${id}-cur`} x1="0" x2="1"><stop offset="0" stopColor="#0a84ff" /><stop offset="1" stopColor="#64d2ff" /></linearGradient>
+        <pattern id={`${id}-hatch`} width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <rect width="8" height="8" fill="#1c1c1e" /><rect width="4" height="8" fill="#2c2c2e" />
+        </pattern>
+      </defs>
+      {shape.fins.map((d) => <path key={d} d={d} fill="#2c2c2e" stroke="rgba(255,255,255,0.18)" strokeWidth="1" />)}
+      <g clipPath={`url(#${id}-clip)`}>
+        <rect x={shape.x0 - 20} y="0" width={W + 40} height="160" fill="#1c1c1e" />
+        {parts.map((p, i) => (
+          <rect key={i} className="fish-seg" style={{ animationDelay: `${0.15 + i * 0.12}s` }} x={p.x} y="0" width={p.w + 0.5} height="160"
+            fill={p.rest ? `url(#${id}-hatch)` : p.current ? `url(#${id}-cur)` : p.fill ?? '#3a3a3c'} />
+        ))}
+        {parts.slice(1).map((p, i) => <line key={i} x1={p.x} x2={p.x} y1="0" y2="160" stroke="#000" strokeWidth="2.5" />)}
+      </g>
+      <path d={shape.body} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
+      <circle cx={shape.eye[0]} cy={shape.eye[1]} r="4.5" fill="#000" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+const MIX_COLORS = ['#ff9f0a', '#30d158', '#bf5af2', '#ff375f', '#64d2ff', '#ffd60a']
+
+// 重さの内訳：元の魚（加工ロットなら入れた魚）を魚の形で描き、加工品ごとに切り分ける
 function Family({ items, it, t, lang }) {
   const parent = items[it.parent]
   if (!parent) return null
+  const tr = (x) => term(lang, x)
   const kids = parent.children.map((id) => items[id])
   const used = kids.reduce((n, k) => n + k.kg, 0)
+  const rest = Math.max(0, parent.kg - used)
+  const others = kids.filter((k) => k.id !== it.id)
+  const segs = [{ kg: it.kg, current: true }, ...others.map((k) => ({ kg: k.kg })), ...(rest > 0 ? [{ kg: rest, rest: true }] : [])]
+  const pct = (kg) => Math.round((kg / parent.kg) * 100)
+  // 加工ロット：入れた魚（重さに比例した大きさ）と、その割合
+  const inputs = parent.unit === 'mix' ? parent.info.inputs.map((id) => items[id]).filter(Boolean) : []
+  const inKg = (o) => parent.info.inputKg[o.id] ?? o.kg
+  const inTotal = inputs.reduce((n, o) => n + inKg(o), 0) || 1
+  const maxIn = Math.max(...inputs.map(inKg), 1)
   return (
     <section className="story-section">
       <motion.div {...reveal}>
-        <div className="eyebrow-dark">{parent.unit === 'lot' ? 'ONE CATCH, MANY TABLES' : parent.unit === 'mix' ? 'ONE BATCH, MANY TABLES' : 'ONE FISH, MANY TABLES'}</div>
-        <h2 className="story-h2">{t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, term(lang, parent.name), kids.length)}</h2>
+        <div className="eyebrow-dark">WEIGHT BALANCE</div>
+        <h2 className="story-h2">{t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, tr(parent.name), kids.length)}</h2>
         <p className="story-lead">{parent.unit === 'lot' ? t.familyLeadLot : parent.unit === 'mix' ? t.familyLeadMix : t.familyLead}</p>
       </motion.div>
-      <motion.div className="weight-bar" {...reveal} transition={{ ...reveal.transition, delay: 0.15 }}>
-        {kids.map((k, i) => (
-          <motion.div key={k.id} className="weight-seg" data-current={k.id === it.id || undefined}
-            initial={{ flexGrow: 0 }} whileInView={{ flexGrow: k.kg }} viewport={{ once: true }} transition={{ duration: 1, delay: 0.3 + i * 0.08, ease }}
-            title={`${term(lang, k.name)} ${k.kg} kg`} />
-        ))}
-        <motion.div className="weight-seg rest" initial={{ flexGrow: 0 }} whileInView={{ flexGrow: Math.max(0, parent.kg - used) }} viewport={{ once: true }} transition={{ duration: 1, delay: 0.5, ease }} />
-      </motion.div>
+      {inputs.length > 0 && (
+        <>
+          <div className="mix-inputs">
+            {inputs.map((o, i) => (
+              <div key={o.id} className="mix-input" style={{ flexGrow: inKg(o), maxWidth: `${Math.max(28, (inKg(o) / maxIn) * 48)}%` }}>
+                <FishSvg shape={fishOf(o.species)} segs={[{ kg: 1, fill: MIX_COLORS[i % MIX_COLORS.length] }]} label={tr(o.info.shipName)} />
+                <b>{tr(o.info.shipName) ?? '—'}</b>
+                <small>{inKg(o)} kg · {Math.round((inKg(o) / inTotal) * 100)}%</small>
+              </div>
+            ))}
+          </div>
+          <div className="mix-merge">↓ {t.mixShare} · {tr(parent.name)} {parent.kg} kg</div>
+        </>
+      )}
+      <div className="fish-main">
+        <FishSvg shape={fishOf(parent.species)} segs={segs} label={tr(parent.name)} />
+      </div>
       <div className="weight-legend">
-        <span><i className="sw cur" />{t.thisProduct} {it.kg} kg</span>
-        <span><i className="sw sib" />{t.otherProducts}</span>
-        <span><i className="sw rest" />{t.trimmings} {Math.max(0, parent.kg - used).toFixed(1)} kg</span>
+        <span><i className="sw cur" />{t.thisProduct} {it.kg} kg（{pct(it.kg)}%）</span>
+        {others.length > 0 && <span><i className="sw sib" />{t.otherProducts} {others.length} · {others.reduce((n, k) => n + k.kg, 0).toFixed(1)} kg</span>}
+        <span><i className="sw rest" />{t.trimmings} {rest.toFixed(1)} kg（{pct(rest)}%）</span>
       </div>
     </section>
   )
@@ -470,7 +672,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       else list.push({ key: e.id, ...EV[e.type], title: ev.detail || (lang === 'en' ? EV[e.type].en : EV[e.type].ja), lines: [tr(ev.who), when(e.created_at)], at: e.created_at })
     }
     if (it.kind === 'prod' && it.info.shelfDays != null) {
-      list.push({ key: 'table', en: 'YOUR TABLE', ja: 'あなたの食卓へ', title: `${it.info.shelfDays > 5 ? t.bestBefore : t.useBy} ${addDays(it.info.createdAt, it.info.shelfDays)}`, lines: [it.info.storage && t.keepAt(tr(it.info.storage))].filter(Boolean) })
+      list.push({ key: 'table', en: 'SHELF LIFE', ja: '期限', title: `${it.info.shelfDays > 5 ? t.bestBefore : t.useBy} ${addDays(it.info.createdAt, it.info.shelfDays)}`, lines: [it.info.storage && t.keepAt(tr(it.info.storage))].filter(Boolean) })
     }
     return list
   }, [chain, lang])
@@ -520,10 +722,10 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       {/* ---- 旅の地図 ---- */}
       <section className="map-section">
         <motion.div className="map-caption" {...reveal}>
-          <div className="eyebrow-dark">THE JOURNEY</div>
+          <div className="eyebrow-dark">ROUTE</div>
           <h2 className="story-h2">{t.mapTitle}</h2>
         </motion.div>
-        <MapBoundary stops={stops} t={t}><JourneyMap stops={stops} t={t} ais={ais?.linked ? ais : null} /></MapBoundary>
+        <MapBoundary stops={stops} t={t}><JourneyMap stops={stops} t={t} ais={ais} /></MapBoundary>
         <div className="map-note">{t.mapNote}{ais?.linked ? ` ・ ${t.aisMapNote}` : ''}</div>
       </section>
 
@@ -533,7 +735,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       {/* ---- 道のり ---- */}
       <section className="story-section" ref={journeyRef}>
         <motion.div {...reveal}>
-          <div className="eyebrow-dark">EVERY STEP, RECORDED</div>
+          <div className="eyebrow-dark">RECORD LOG</div>
           <h2 className="story-h2">{t.journeyTitle}</h2>
         </motion.div>
         <div className="chapters">

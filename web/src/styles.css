@@ -51,6 +51,8 @@ body::before {
 .inset-list { border-radius: 14px; overflow: hidden; }
 .inset-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 12px 16px; }
 .inset-row + .inset-row { border-top: 1px solid var(--apple-hairline); }
+.followup-step { padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.04); opacity: 0.55; }
+.followup-step[data-done] { background: rgba(52, 199, 89, 0.12); opacity: 1; }
 .inset-row .label { color: var(--apple-text-2); flex-shrink: 0; }
 .inset-row .value { text-align: right; word-break: break-all; }
 

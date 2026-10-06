@@ -22,7 +22,7 @@ import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
   registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId, makeProcessLot,
-  registerScale, fetchScale, declareCatch,
+  registerScale, fetchScale, declareCatch, fetchVesselFollowup,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { checkAis } from './lib/ais.js'
@@ -1151,6 +1151,67 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
   )
 }
 
+// 漁船：水揚げした魚ごとに、そこから作られたもの（加工ロット・加工品）をたどって、段階と行き先をまとめる
+function followupOf(data) {
+  const items = Object.fromEntries(data.items.map((i) => [i.id, i]))
+  const evs = {}
+  for (const e of data.events) (evs[e.item_id] ??= []).push(e)
+  const kidsOf = (id) => data.items.filter((i) => i.parent_id === id || i.inputs?.includes(id))
+  return data.roots.filter((r) => items[r.id]).map((r) => {
+    const all = []
+    const walk = (id) => { if (all.includes(id)) return; all.push(id); kidsOf(id).forEach((k) => walk(k.id)) }
+    walk(r.id)
+    const list = all.map((id) => items[id])
+    const ev = all.flatMap((id) => evs[id] ?? [])
+    const auction = (evs[r.id] ?? []).find((e) => e.type === 'auction')
+    const products = list.filter((i) => i.kind === 'product')
+    const lot = list.find((i) => i.kind === 'process_lot')
+    const processors = [...new Set(ev.filter((e) => e.type === 'born').map((e) => e.who))]
+    // 販売中：店ごとのパック数
+    const shops = {}
+    for (const e of ev.filter((x) => x.type === 'sell')) {
+      shops[e.who] ??= { packs: 0, names: new Set() }
+      shops[e.who].packs += items[e.item_id]?.quantity ?? 1
+      if (e.display_name) shops[e.who].names.add(e.display_name)
+    }
+    return {
+      root: items[r.id], declarationId: r.declaration_id, auction, lot, products, processors,
+      packs: products.reduce((n, p) => n + p.quantity, 0),
+      shops: Object.entries(shops).map(([who, v]) => ({ who, packs: v.packs, names: [...v.names] })),
+    }
+  })
+}
+
+function FollowupCard({ f }) {
+  const steps = [
+    { label: '水揚げ', done: true, text: `${ymd(f.root.landed_at ?? f.root.created_at)} · ${f.root.landing_port ?? '—'}` },
+    { label: 'せり', done: !!f.auction, text: f.auction ? `買受：${f.auction.to ?? '—'}` : '—' },
+    { label: '加工', done: f.products.length > 0 || !!f.lot,
+      text: f.products.length ? `${f.processors.join('・') || '—'} · 加工品 ${f.products.length}ロット・${f.packs}パック${f.lot ? `（加工ロット ${f.lot.inputs?.length ?? 1}件）` : ''}` : f.lot ? `加工ロット ${f.lot.id}` : '—' },
+    { label: '販売', done: f.shops.length > 0, text: f.shops.length ? f.shops.map((s) => `${s.who} ${s.packs}パック`).join('・') : '—' },
+  ]
+  return (
+    <div className="inset-row" style={{ display: 'block' }}>
+      <Group justify="space-between" wrap="nowrap" mb={8}>
+        <div style={{ minWidth: 0 }}>
+          <Text size="sm" fw={700}>{f.root.species} {f.root.weight_kg} kg</Text>
+          <Text size="xs" c="dimmed" ff="monospace" truncate>{f.root.id}{f.declarationId ? ` · ${f.declarationId}` : ''}</Text>
+        </div>
+        <Badge color={f.shops.length ? 'green' : 'gray'} style={{ flexShrink: 0 }}>{f.shops.length ? '販売中' : steps.filter((s) => s.done).at(-1).label}</Badge>
+      </Group>
+      <SimpleGrid cols={{ base: 1, sm: 4 }} spacing="xs">
+        {steps.map((s) => (
+          <div key={s.label} className="followup-step" data-done={s.done || undefined}>
+            <Text size="xs" fw={700}>{s.done ? '✓ ' : ''}{s.label}</Text>
+            <Text size="xs" c="dimmed">{s.text}</Text>
+          </div>
+        ))}
+      </SimpleGrid>
+      {f.shops.some((s) => s.names.length) && <Text size="xs" c="dimmed" mt={6}>売場表示：{[...new Set(f.shops.flatMap((s) => s.names))].join('・')}</Text>}
+    </div>
+  )
+}
+
 // 漁船の画面：水揚げの前に漁獲を申告する（自分の鍵で署名・その場の位置も記録）。申告した一覧
 function VesselPage({ me, db, reload }) {
   const isMobile = useIsMobile()
@@ -1165,6 +1226,10 @@ function VesselPage({ me, db, reload }) {
   const [busy, setBusy] = useState(false)
   const sp = SPECIES.find((x) => x.name === species)
   const mine = (db.declarations ?? []).filter((d) => d.declared_by === me.business.id)
+  // 水揚げ後の記録（申告から水揚げされた魚の、その後）
+  const [follow, setFollow] = useState(null)
+  useEffect(() => { fetchVesselFollowup().then((d) => setFollow(followupOf(d))).catch((e) => setFollow({ error: e.message })) }, [db])
+  const landedDecl = new Map((Array.isArray(follow) ? follow : []).map((f) => [f.declarationId, f.root.id]))
   const submit = async () => {
     setBusy(true)
     try {
@@ -1209,7 +1274,10 @@ function VesselPage({ me, db, reload }) {
             <div className="inset-list glass">
               {mine.map((d) => (
                 <div key={d.id} className="inset-row" style={{ display: 'block' }}>
-                  <Text size="sm" fw={600}>{d.species}・{d.catch_area}</Text>
+                  <Group justify="space-between" wrap="nowrap">
+                    <Text size="sm" fw={600}>{d.species}・{d.catch_area}</Text>
+                    <Badge size="sm" color={landedDecl.has(d.id) ? 'green' : 'gray'} style={{ flexShrink: 0 }}>{landedDecl.has(d.id) ? '水揚げ済み' : '水揚げ前'}</Badge>
+                  </Group>
                   <Text size="xs" c="dimmed">{d.catch_from}〜{d.catch_to} · {mdhm(d.created_at)}</Text>
                   <Group gap="xs" mt={2}>
                     <Text size="xs" ff="monospace" c="dimmed">{d.id}</Text>
@@ -1221,6 +1289,16 @@ function VesselPage({ me, db, reload }) {
             </div>
           </Card>
         </Box>
+        <Card mt="lg">
+          <Text fw={700} mb="sm">水揚げ後の記録（{Array.isArray(follow) ? follow.length : '…'}件）</Text>
+          {follow?.error && <Text size="sm" c="red">読み込めません：{follow.error}</Text>}
+          {Array.isArray(follow) && (
+            <div className="inset-list glass">
+              {follow.map((f) => <FollowupCard key={f.root.id} f={f} />)}
+              {follow.length === 0 && <Text size="sm" c="dimmed" p="md">水揚げされた申告はまだありません</Text>}
+            </div>
+          )}
+        </Card>
       </div>
     </>
   )
