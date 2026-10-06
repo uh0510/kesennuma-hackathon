@@ -23,6 +23,10 @@
 // 個体・加工品の発行（landing / born）では、そのときの値とマスタの値を payload.item に写し取り、指紋に含める。
 //   → あとでマスタを直しても、この記録の内容と指紋は変わらない。items の値が写しと食い違えば検証で分かる
 // 現場の人にウォレット操作をさせないため、事業者ごとの鍵をサーバーで預かって署名する（プロトタイプの割り切り）
+// チェーンは TraceRegistryV2：記録の種類ごとに書ける役割が決まっている（漁獲申告＝漁船、水揚げ・せり＝市場、加工＝加工・小売、販売開始＝小売）。
+//   同じ決まりをここでも先に確かめ、DB とチェーンが食い違わないようにする（ROLE_BIT・ALLOWED はコントラクトと同じ）
+// 漁獲の申告：{ declare: { species, catchArea, catchFrom, catchTo, estKg?, estCount? }, location?, photo? }（漁船だけ）
+//   水揚げ（landing）で payload.declarationId を送ると、魚種・船・海域・漁獲期間は申告の値を使い、申告の写しを payload.declaration に入れる
 // はかりの署名つきの重さ：水揚げ・受け取りで payload.scale_reading（まとめて受け取るときは body.scale_reading）に
 //   { id, kg, at, a（はかりのアドレス）, s（署名） } を送ると、署名・登録・30分以内・使い回し・重さの一致を確かめて payload.scale に入れる
 //   はかりの登録：{ registerScale: { address, name, sig } }（sig は登録の文への、はかりの鍵の署名）
@@ -30,10 +34,31 @@ import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ethers } from 'npm:ethers@6'
 
 const ABI = [
-  'function issue(bytes32 itemId, bytes32 parentId, bytes32 dataHash)',
-  'function record(bytes32 itemId, bytes32 dataHash)',
-  'function recordBatch(bytes32[] itemIds, bytes32[] dataHashes)',
+  'function issue(bytes32 itemId, bytes32 parentId, uint8 kind, bytes32 dataHash)',
+  'function issueMix(bytes32 itemId, bytes32[] inputs, bytes32 dataHash)',
+  'function record(bytes32 itemId, uint8 kind, bytes32 dataHash)',
+  'function recordBatch(bytes32[] itemIds, uint8 kind, bytes32[] dataHashes)',
 ]
+// 記録の種類（コントラクトの番号）と、書ける役割（コントラクトの初期値と同じ）
+const KIND: Record<string, number> = { catch: 1, landing: 2, auction: 3, receive: 4, ship: 5, process: 6, born: 6, sell: 7, storage: 8, fix: 9 }
+const ROLE_BIT: Record<string, number> = { vessel: 1, market: 2, processor: 4, retailer: 8, exporter: 16 }
+const TRADE = 2 | 4 | 8 | 16
+const ALLOWED: Record<number, number> = { 1: 1, 2: 2, 3: 2, 4: TRADE, 5: TRADE, 6: 4 | 8, 7: 8, 8: TRADE, 9: TRADE | 1 }
+const KIND_NAME: Record<string, string> = {
+  catch: '漁獲の申告', landing: '水揚げの登録', auction: 'せり', receive: '受け取り', ship: '出荷', process: '加工', born: '加工品の発行',
+  sell: '販売開始', storage: '保管', fix: '訂正',
+}
+const ROLE_NAME: Record<number, string> = { 1: '漁船', 2: '市場', 4: '加工', 8: '小売', 16: '輸出' }
+// deno-lint-ignore no-explicit-any
+async function checkRole(supa: any, actor: string, type: string) {
+  const kind = KIND[type]
+  if (!kind) throw new Error(`記録の種類 ${type} は受け付けません`)
+  const { data: me } = await supa.from('businesses').select('role').eq('id', actor).maybeSingle()
+  if (!((ROLE_BIT[me?.role] ?? 0) & ALLOWED[kind])) {
+    const who = Object.entries(ROLE_NAME).filter(([b]) => Number(b) & ALLOWED[kind]).map(([, n]) => n).join('・')
+    throw new Error(`${KIND_NAME[type]}は${who}だけができます`)
+  }
+}
 
 function canonical(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v)
@@ -252,7 +277,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
 // ==== まとめて記録する（加工・引き渡し・受け取り） ====
 const BATCH_TYPES = ['born', 'ship', 'auction', 'receive', 'sell']
 const BATCH_MAX = 200
-const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId', 'into', 'inputs', 'scale', 'scale_reading']
+const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId', 'into', 'inputs', 'scale', 'scale_reading', 'declaration', 'declarationId']
 const clean = (p: Record<string, unknown> = {}) => Object.fromEntries(Object.entries(p).filter(([k]) => !STRIP.includes(k)))
 
 // deno-lint-ignore no-explicit-any
@@ -264,6 +289,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
   if (!BATCH_TYPES.includes(type) || list.some((b) => b.type !== type)) throw new Error('まとめて記録できるのは、同じ種類の加工・引き渡し・受け取り・販売開始だけです')
   const ids = list.map((b) => b.itemId)
   if (new Set(ids).size !== ids.length) throw new Error('同じIDが2回含まれています')
+  await checkRole(supa, actor, type)
 
   // 対象の記録をまとめて読む（加工なら親、それ以外は対象のID）
   const parentId = type === 'born' ? (list[0].parentId ?? null) : null
@@ -381,7 +407,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
       const parentKey = await itemKey(parentId!)
       const sent: Array<{ id: number; tx: string }> = []
       for (const id of ids) {
-        const tx = await reg.issue(await itemKey(id), parentKey, byId[id].hash, { nonce: nonce++, gasLimit: 250000 })
+        const tx = await reg.issue(await itemKey(id), parentKey, KIND.born, byId[id].hash, { nonce: nonce++, gasLimit: 250000 })
         sent.push({ id: byId[id].id, tx: tx.hash })
         lastTx = tx.hash
       }
@@ -390,7 +416,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
     } else {
       // 引き渡し・受け取りは recordBatch の1回の取引にまとめる
       const k = await Promise.all(ids.map((id) => itemKey(id)))
-      const tx = await reg.recordBatch(k, ids.map((id) => byId[id].hash), { nonce: nonce++, gasLimit: 80000 + 45000 * ids.length })
+      const tx = await reg.recordBatch(k, KIND[type], ids.map((id) => byId[id].hash), { nonce: nonce++, gasLimit: 80000 + 45000 * ids.length })
       await supa.from('events').update({ tx_hash: tx.hash }).in('id', saved.map((s: { id: number }) => s.id))
       lastTx = tx.hash
     }
@@ -401,11 +427,58 @@ async function handleBatch(supa: any, actor: string, body: any) {
   }
 }
 
+// ==== 漁獲の申告（漁船が水揚げの前に） ====
+// deno-lint-ignore no-explicit-any
+async function handleDeclare(supa: any, actor: string, body: any) {
+  await checkRole(supa, actor, 'catch')
+  const { data: me } = await supa.from('businesses').select('ship_id').eq('id', actor).maybeSingle()
+  if (!me?.ship_id) throw new Error('この漁船の事業者に、船がひも付いていません')
+  const d = body.declare ?? {}
+  const day = /^\d{4}-\d{2}-\d{2}$/
+  if (typeof d.species !== 'string' || !d.species || typeof d.catchArea !== 'string' || !d.catchArea) throw new Error('魚種と海域を入れてください')
+  if (!day.test(String(d.catchFrom)) || !day.test(String(d.catchTo)) || d.catchFrom > d.catchTo) throw new Error('漁獲期間を正しく入れてください')
+  const { data: ship } = await supa.from('ships').select('id, name, reg_no, permit_no, gear').eq('id', me.ship_id).single()
+  const ymd6 = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()).replaceAll('-', '').slice(2)
+  const id = `DCL-${ymd6}-${crypto.getRandomValues(new Uint8Array(2)).reduce((a, b) => a + b.toString(16).padStart(2, '0'), '').toUpperCase()}`
+  const num = (v: unknown) => (Number(v) > 0 ? Number(v) : null)
+  let p: Record<string, unknown> = {
+    detail: `漁獲の申告・${d.species}・${d.catchArea}`, species: d.species, catch_area: d.catchArea, catch_from: d.catchFrom, catch_to: d.catchTo,
+    est_kg: num(d.estKg), est_count: num(d.estCount), ship,
+  }
+  const where = await locate(supa, actor, body.location ?? null)
+  if (where) p = { ...p, location: where }
+  if (body.photo) p = { ...p, photo: await savePhoto(supa, id, body.photo) }
+  const createdAt = new Date().toISOString()
+  const hash = await sha256Hex(canonical({ itemId: id, type: 'catch', actor, payload: p, prevHash: null, createdAt }))
+  const { error } = await supa.from('declarations').insert({
+    id, ship_id: ship.id, declared_by: actor, species: d.species, catch_area: d.catchArea, catch_from: d.catchFrom, catch_to: d.catchTo,
+    payload: p, hash, created_at: createdAt,
+  })
+  if (error) throw error
+
+  const registry = Deno.env.get('REGISTRY_ADDRESS')
+  if (!registry) return { ok: true, id, hash, txHash: null }
+  try {
+    const keys = JSON.parse(Deno.env.get('ISSUER_KEYS') ?? '{}')
+    if (!keys[actor]) throw new Error(`事業者 ${actor} の署名鍵が ISSUER_KEYS にありません`)
+    const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(Deno.env.get('CHAIN_RPC_URL') ?? Deno.env.get('AMOY_RPC_URL')))
+    const reg = new ethers.Contract(registry, ABI, wallet)
+    const key = await itemKey(id)
+    const tx = await sendWithRetry(wallet, (nonce) => reg.issue(key, ethers.ZeroHash, KIND.catch, hash, { nonce }))
+    await supa.from('declarations').update({ tx_hash: tx.hash }).eq('id', id)
+    return { ok: true, id, hash, txHash: tx.hash }
+  } catch (e) {
+    const reason = String((e as { shortMessage?: string })?.shortMessage ?? (e as Error)?.message ?? e)
+    return { ok: true, id, hash, txHash: null, chainError: reason }
+  }
+}
+
 // ==== 加工ロット（何尾かをまとめて1回の加工に入れる） ====
 const MIX_MAX = 100
 // deno-lint-ignore no-explicit-any
 async function handleMix(supa: any, actor: string, body: any) {
   const { itemId, name, inputs, detail } = body.mix ?? {}
+  await checkRole(supa, actor, 'process')
   if (typeof itemId !== 'string' || !/^KSN-[A-Z]+-\d{6}-M\d{3}$/.test(itemId)) throw new Error('加工ロットのIDが正しくありません')
   if (!Array.isArray(inputs) || inputs.length < 1) throw new Error('入れる魚を選んでください')
   if (inputs.length > MIX_MAX) throw new Error(`一度に入れられるのは ${MIX_MAX} 件までです`)
@@ -475,9 +548,10 @@ async function handleMix(supa: any, actor: string, body: any) {
     const reg = new ethers.Contract(registry, ABI, wallet)
     let nonce = await wallet.getNonce('pending')
     const s = Object.fromEntries(saved.map((x: { item_id: string; id: number; hash: string }) => [x.item_id, x]))
-    const tx1 = await reg.issue(await itemKey(itemId), ethers.ZeroHash, lotHash, { nonce: nonce++, gasLimit: 250000 })
     const ids = used.map((u) => u.id)
-    const tx2 = await reg.recordBatch(await Promise.all(ids.map((id) => itemKey(id))), ids.map((id) => s[id].hash), { nonce: nonce++, gasLimit: 80000 + 45000 * ids.length })
+    const inputKeys = await Promise.all(ids.map((id) => itemKey(id)))
+    const tx1 = await reg.issueMix(await itemKey(itemId), inputKeys, lotHash, { nonce: nonce++, gasLimit: 150000 + 30000 * ids.length })
+    const tx2 = await reg.recordBatch(inputKeys, KIND.process, ids.map((id) => s[id].hash), { nonce: nonce++, gasLimit: 80000 + 45000 * ids.length })
     await supa.from('events').update({ tx_hash: tx1.hash }).eq('id', s[itemId].id)
     await supa.from('events').update({ tx_hash: tx2.hash }).in('id', ids.map((id) => s[id].id))
     return { ok: true, count: saved.length, txHash: tx2.hash }
@@ -509,11 +583,11 @@ Deno.serve(async (req) => {
     // はかりを登録するとき
     if (reqBody.registerScale) return json(await registerScale(supa, actor, reqBody.registerScale))
 
-    // 水揚げ（個体IDの発行）は市場だけ
-    if (type === 'landing') {
-      const { data: me } = await supa.from('businesses').select('role').eq('id', actor).maybeSingle()
-      if (me?.role !== 'market') throw new Error('水揚げの登録（個体IDの発行）は市場だけができます')
-    }
+    // 漁獲の申告（漁船だけ）
+    if (reqBody.declare) return json(await handleDeclare(supa, actor, reqBody))
+
+    // 記録の種類ごとに、書ける役割か（水揚げは市場だけ、など。チェーンと同じ決まり）
+    if (type !== 'activate') await checkRole(supa, actor, type)
 
     // 受け渡しの鎖の確認（持ち主以外・指定外の相手は拒否）
     const extra: Record<string, unknown> = {}
@@ -555,11 +629,28 @@ Deno.serve(async (req) => {
     if (type === 'activate') throw new Error('QRは販売開始を記録すると自動で有効になります')
 
     // 写し（item）・写真の指紋（photo）・場所（location）はサーバーが作ったものだけ。画面から payload で送られてきたものは捨てる
-    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, into: _into, inputs: _inputs, scale: _scale, scale_reading: scaleReading, ...rest } = payload
+    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, into: _into, inputs: _inputs, scale: _scale, scale_reading: scaleReading, declaration: _decl, ...rest } = payload
     let body: Record<string, unknown> = { ...rest, ...extra }
 
     // 発行する項目を先に確かめ、写真を保存してから items を作る（途中で失敗しても items だけが残らないように）
     const row = newItem ? pickNewItem(newItem, type, parentId) : null
+    // 漁船の申告から水揚げするとき：魚種・船・海域・漁獲期間は申告の値（市場は書き換えられない）
+    let declKey: string | null = null
+    if (type === 'landing' && payload.declarationId) {
+      const { data: d } = await supa.from('declarations').select('*').eq('id', payload.declarationId).maybeSingle()
+      if (!d) throw new Error(`申告 ${payload.declarationId} が見つかりません`)
+      const { data: used } = await supa.from('events').select('item_id').eq('type', 'landing').eq('payload->declaration->>id', d.id).limit(1)
+      if (used?.length) throw new Error(`申告 ${d.id} は、もう ${used[0].item_id} の水揚げに使われています`)
+      Object.assign(row!, { ship_id: d.ship_id, species: d.species, name: d.species, catch_area: d.catch_area })
+      const { data: by } = await supa.from('businesses').select('name').eq('id', d.declared_by).maybeSingle()
+      body = {
+        ...body, period: `${d.catch_from}〜${d.catch_to}`, catch_from: d.catch_from, catch_to: d.catch_to,
+        declaration: { id: d.id, hash: d.hash, tx_hash: d.tx_hash, by: { id: d.declared_by, name: by?.name ?? null }, at: d.created_at,
+          species: d.species, catch_area: d.catch_area, catch_from: d.catch_from, catch_to: d.catch_to, location: d.payload?.location ?? null },
+      }
+      delete body.declarationId
+      declKey = await itemKey(d.id)
+    }
     // はかりの署名つきの重さ（水揚げ・受け取りだけ）
     if (scaleReading) {
       if (type !== 'landing' && type !== 'receive') throw new Error('はかりの値を使えるのは、水揚げと受け取りだけです')
@@ -608,10 +699,11 @@ Deno.serve(async (req) => {
       const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(rpc))
       const reg = new ethers.Contract(registry, ABI, wallet)
       const key = await itemKey(itemId)
-      const parentKey = parentId ? await itemKey(parentId) : ethers.ZeroHash
+      // 申告から水揚げしたものは、チェーンでも申告を親にする（漁船の鍵の記録 → 市場の鍵の記録）
+      const parentKey = parentId ? await itemKey(parentId) : declKey ?? ethers.ZeroHash
       const tx = await sendWithRetry(wallet, (nonce) => (row
-        ? reg.issue(key, parentKey, hash, { nonce })
-        : reg.record(key, hash, { nonce })))
+        ? reg.issue(key, parentKey, KIND[type], hash, { nonce })
+        : reg.record(key, KIND[type], hash, { nonce })))
       await supa.from('events').update({ tx_hash: tx.hash }).eq('id', ev.id)
       return json({ ok: true, eventId: ev.id, hash, txHash: tx.hash })
     } catch (e) {

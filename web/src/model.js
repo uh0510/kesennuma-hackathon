@@ -51,13 +51,15 @@ export function buildItems({ items, events, ships, products, businesses }) {
         catchFrom: landing?.payload?.catch_from ?? null, catchTo: landing?.payload?.catch_to ?? null,
         shipId: r.ship_id ?? null, shipName: (snap?.ship ?? ship[r.ship_id])?.name ?? null, gear: (snap?.ship ?? ship[r.ship_id])?.gear ?? null, maker: biz[r.created_by]?.name ?? null,
         storage: (snap?.product ?? prod[r.product_id])?.storage ?? null, shelfDays: (snap?.product ?? prod[r.product_id])?.shelf_days ?? null,
+        // 漁船の申告（あれば）と、水揚げの重さがはかりの署名つきか
+        declaration: landing?.payload?.declaration ?? null, landingScale: landing?.payload?.scale ?? null,
         inputs: r.inputs ?? [], inputKg: Object.fromEntries((evs.find((e) => e.type === 'born')?.payload?.inputs ?? []).map((x) => [x.id, x.kg])),
       },
       // 加工ロットに入れた魚：入れた先の加工ロットのID（入れたあとは、ここに記録を足さない）
       into: evs.findLast((e) => e.type === 'process' && e.payload?.into)?.payload.into ?? null,
       events: evs.map((e) => ({
         id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash,
-        loc: e.payload?.location ?? null, home: biz[e.actor]?.lat != null ? [biz[e.actor].lng, biz[e.actor].lat] : null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null, checks: e.payload?.checks ?? null, scale: e.payload?.scale ?? null, kg: e.payload?.weight_kg ?? null,
+        loc: e.payload?.location ?? null, home: biz[e.actor]?.lat != null ? [biz[e.actor].lng, biz[e.actor].lat] : null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null, checks: e.payload?.checks ?? null, decl: e.payload?.declaration ?? null, scale: e.payload?.scale ?? null, kg: e.payload?.weight_kg ?? null,
       })),
       custody: custodyOf(evs, biz, Number(r.weight_kg)),
       sold: evs.some((e) => e.type === 'sell'),

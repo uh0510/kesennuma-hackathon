@@ -22,7 +22,7 @@ import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
   registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId, makeProcessLot,
-  registerScale, fetchScale,
+  registerScale, fetchScale, declareCatch,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { checkAis } from './lib/ais.js'
@@ -300,8 +300,15 @@ function useChecks({ items, it, myBiz, also = [], from = null, enabled = true })
     for (const x of bad) (g[x.short] ??= new Set()).add(x.name)
     row(key, title, bad.some((x) => x.level === 'ng') ? 'ng' : 'warn', Object.entries(g).map(([k, v]) => `${k}：${[...v].join('・')}`).join('、'))
   }
+  // 申告：漁船が自分で申告したか。計量：水揚げの重さがはかりの署名つきか
+  add('decl', '申告', origins.map((o) => (o.info.declaration
+    ? { level: 'ok', text: `${o.info.declaration.by?.name ?? '漁船'}（${mdhm(o.info.declaration.at)}）`, name: o.info.shipName ?? o.id }
+    : { level: 'warn', text: '漁船の申告なし', short: '申告なし', name: o.info.shipName ?? o.id })), '漁船が申告')
   add('area', '漁場', per.map((x) => x.area && { ...x.area, name: x.name }), '申告どおり')
   add('port', '入港', per.map((x) => x.port && { ...x.port, name: x.name }), '入港を確認')
+  add('scale', '計量', origins.map((o) => (o.info.landingScale
+    ? { level: 'ok', text: `${o.info.landingScale.name}（署名つき）`, name: o.info.shipName ?? o.id }
+    : { level: 'warn', text: '手入力', short: '手入力', name: o.info.shipName ?? o.id })), 'はかり（署名つき）')
   if (myBiz?.designated_ships) {
     add('ship', '漁船', origins.filter((o) => o.info.shipId).map((o) => {
       const ok = myBiz.designated_ships.includes(o.info.shipId)
@@ -999,6 +1006,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
                   {e.to && <Text size="sm"><IconArrowRight size={13} style={{ verticalAlign: -2 }} /> {e.to.name} へ引き渡し</Text>}
                   {e.type === 'receive' && e.from && <Text size="sm">{e.from.name} から受け取り</Text>}
                   {e.wc && <WeightNote wc={e.wc} />}
+                  {e.decl && <Text size="sm" c="green.8"><IconSailboat size={13} style={{ verticalAlign: -2 }} /> 漁船の申告：{e.decl.by?.name}（{mdhm(e.decl.at)}・<span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{e.decl.id}</span>）</Text>}
                   {e.checks && <ChecksNote checks={e.checks} />}
                   {e.scale
                     ? <Text size="sm" c="green.8"><IconScale size={13} style={{ verticalAlign: -2 }} /> はかり：{e.scale.name} {e.scale.kg} kg{e.scale.total ? '（合計）' : ''}・署名つき</Text>
@@ -1110,7 +1118,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
           )}
       </div>
 
-      <RegisterModal opened={modal === 'register'} onClose={() => setModal(null)} busy={busy} items={items} ships={db.ships}
+      <RegisterModal key={`reg-${modal === 'register'}`} opened={modal === 'register'} onClose={() => setModal(null)} busy={busy} items={items} ships={db.ships} declarations={db.declarations ?? []}
         onSave={(f) => run(() => registerLanding(f), (r) => { pick(f.itemId); notifyRecorded(`${f.lot ? '水揚げロット' : '個体'}のIDを発行しました：${f.itemId}`, r) })} />
       {it && <>
         <AddInfoModal opened={modal === 'add'} onClose={() => setModal(null)} item={it} busy={busy}
@@ -1139,6 +1147,81 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
         <SellModal key={`s-${it.id}-${modal === 'sell'}`} opened={modal === 'sell'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(f) => run(() => startSale({ itemId: it.id, ...f }), (r) => notifyRecorded('販売開始を記録しました', r))} />
       </>}
+    </>
+  )
+}
+
+// 漁船の画面：水揚げの前に漁獲を申告する（自分の鍵で署名・その場の位置も記録）。申告した一覧
+function VesselPage({ me, db, reload }) {
+  const isMobile = useIsMobile()
+  const myBiz = db.businesses.find((b) => b.id === me.business.id)
+  const ship = db.ships.find((s) => s.id === myBiz?.ship_id)
+  const [species, setSpecies] = useState(SPECIES[0].name)
+  const [area, setArea] = useState(AREAS[0])
+  const [catchFrom, setCatchFrom] = useState(ymd(new Date(Date.now() - 30 * 86400000)))
+  const [catchTo, setCatchTo] = useState(ymd(new Date()))
+  const [estKg, setEstKg] = useState(SPECIES[0].kg)
+  const [estCount, setEstCount] = useState(1)
+  const [busy, setBusy] = useState(false)
+  const sp = SPECIES.find((x) => x.name === species)
+  const mine = (db.declarations ?? []).filter((d) => d.declared_by === me.business.id)
+  const submit = async () => {
+    setBusy(true)
+    try {
+      const r = await declareCatch({ species, catchArea: area, catchFrom, catchTo, estKg: Number(estKg), estCount: sp.lot ? Number(estCount) : 1 })
+      await reload()
+      notifyRecorded(`申告しました：${r.id}`, r)
+    } catch (e) { errMsg(e) } finally { setBusy(false) }
+  }
+  return (
+    <>
+      <section className="mgr-hero">
+        <div className="mgr-hero-glow" aria-hidden />
+        <div className="mgr-hero-inner">
+          <Text className="mgr-date">{new Date().toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'long', day: 'numeric', weekday: 'short' })}</Text>
+          <Title order={1} className="headline" c="white" fz={isMobile ? 24 : 30} mt={4} mb="lg">{ship?.name ?? me.business.name}</Title>
+        </div>
+      </section>
+      <div className="mgr-overlap">
+        <Box style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) 360px', gap: 28, alignItems: 'start' }}>
+          <Card>
+            <Stack gap="lg">
+              <Title order={2} className="headline" fz={22}>漁獲の申告</Title>
+              <Select label="魚種" data={SPECIES.map((x) => x.name)} value={species} allowDeselect={false}
+                onChange={(v) => { const x = SPECIES.find((y) => y.name === v); setSpecies(v); setEstKg(x.kg); setEstCount(x.count ?? 1) }} />
+              <div>
+                <Text className="field-label">漁獲海域</Text>
+                <SegmentedControl fullWidth data={AREAS} value={area} onChange={setArea} orientation="vertical" />
+              </div>
+              <SimpleGrid cols={2} spacing="xs">
+                <TextInput type="date" label="漁獲期間（始まり）" value={catchFrom} max={catchTo} onChange={(e) => e.currentTarget.value && setCatchFrom(e.currentTarget.value)} />
+                <TextInput type="date" label="漁獲期間（終わり）" value={catchTo} max={ymd(new Date())} onChange={(e) => e.currentTarget.value && setCatchTo(e.currentTarget.value)} />
+              </SimpleGrid>
+              {sp.lot && <BigNumber label="尾数（見込み）" value={estCount} onChange={setEstCount} unit="尾" steps={[1, 10]} min={1} decimals={0} />}
+              <BigNumber label="重さ（見込み）" value={estKg} onChange={setEstKg} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
+              <GeoStatus opened />
+              <Button size="lg" loading={busy} disabled={!ship || catchFrom > catchTo} leftSection={<IconSailboat size={20} />} onClick={submit}>申告する</Button>
+              {!ship && <Text size="sm" c="red">この漁船の事業者に、船がひも付いていません</Text>}
+            </Stack>
+          </Card>
+          <Card>
+            <Text fw={700} mb="sm">申告した漁獲（{mine.length}件）</Text>
+            <div className="inset-list glass">
+              {mine.map((d) => (
+                <div key={d.id} className="inset-row" style={{ display: 'block' }}>
+                  <Text size="sm" fw={600}>{d.species}・{d.catch_area}</Text>
+                  <Text size="xs" c="dimmed">{d.catch_from}〜{d.catch_to} · {mdhm(d.created_at)}</Text>
+                  <Group gap="xs" mt={2}>
+                    <Text size="xs" ff="monospace" c="dimmed">{d.id}</Text>
+                    {d.tx_hash && <Anchor size="xs" href={explorerTx(d.tx_hash)} target="_blank"><Group gap={2}><IconLink size={12} />チェーン</Group></Anchor>}
+                  </Group>
+                </div>
+              ))}
+              {mine.length === 0 && <Text size="sm" c="dimmed" p="md">まだ申告はありません</Text>}
+            </div>
+          </Card>
+        </Box>
+      </div>
     </>
   )
 }
@@ -1517,8 +1600,13 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
   )
 }
 
-function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
+function RegisterModal({ opened, onClose, busy, items, ships, declarations = [], onSave }) {
   const [shipId, setShipId] = useState(null)
+  // 漁船の申告：まだ水揚げに使っていないもの。選ぶと魚種・船・海域・漁獲期間は申告のまま（変えられない）
+  const usedDecl = new Set(Object.values(items).map((x) => x.info.declaration?.id).filter(Boolean))
+  const openDecls = declarations.filter((d) => !usedDecl.has(d.id))
+  const [declId, setDeclId] = useState(null)
+  const decl = openDecls.find((d) => d.id === declId) ?? null
   const [species, setSpecies] = useState(SPECIES[0].name)
   const [area, setArea] = useState(AREAS[0])
   const [port, setPort] = useState(PORTS[0])
@@ -1532,6 +1620,13 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   const [photo, setPhoto] = useState(null)
   const sp = SPECIES.find((x) => x.name === species)
   const pickSpecies = (x) => { setSpecies(x.name); setKg(x.kg); setCount(x.count ?? 1) }
+  const pickDecl = (d) => {
+    setDeclId(d?.id ?? null)
+    if (!d) return
+    const x = SPECIES.find((y) => y.name === d.species)
+    if (x) { setSpecies(x.name); setKg(d.payload?.est_kg ?? x.kg); setCount(d.payload?.est_count ?? x.count ?? 1) }
+    setShipId(d.ship_id); setArea(d.catch_area); setCatchFrom(d.catch_from); setCatchTo(d.catch_to)
+  }
   const ship = ships.find((s) => s.id === (shipId ?? ships[0]?.id))
   // 水揚げ日（登録が水揚げの翌日以降になることもあるので選べる。時刻は朝 6 時として記録）
   const [day, setDay] = useState(ymd(new Date()))
@@ -1568,6 +1663,22 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   return (
     <Sheet opened={opened} onClose={onClose} title="水揚げを登録">
       <Stack gap="lg">
+        {openDecls.length > 0 && (
+          <div>
+            <Text className="field-label">漁船の申告（{openDecls.length}件）</Text>
+            <Stack gap="xs">
+              {openDecls.map((d) => (
+                <ChoiceCard key={d.id} checked={declId === d.id} onClick={() => pickDecl(d)}>
+                  <Text fw={600} size="sm" pr={24}>{d.payload?.ship?.name ?? '—'}・{d.species}・{d.catch_area}</Text>
+                  <Text size="xs" c="dimmed">{d.catch_from}〜{d.catch_to} · {mdhm(d.created_at)} 申告 · <span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{d.id}</span></Text>
+                </ChoiceCard>
+              ))}
+              <ChoiceCard checked={!declId} onClick={() => pickDecl(null)}><Text fw={600} size="sm">申告なしで登録</Text></ChoiceCard>
+            </Stack>
+          </div>
+        )}
+        {decl && <InfoList rows={[['魚種', decl.species], ['漁船', decl.payload?.ship?.name ?? '—'], ['漁獲海域', decl.catch_area], ['漁獲期間', `${decl.catch_from}〜${decl.catch_to}`], ['申告', `${mdhm(decl.created_at)}（漁船の鍵で署名）`]]} />}
+        {!decl && <>
         <div>
           <Text className="field-label">魚種</Text>
           <Text size="xs" c="dimmed" mb={6}>1尾ずつ管理する魚（マグロ）</Text>
@@ -1596,6 +1707,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
           <Text className="field-label">漁獲海域</Text>
           <SegmentedControl fullWidth data={AREAS} value={area} onChange={setArea} orientation="vertical" />
         </div>
+        </>}
         <TextInput type="date" label="水揚げ日" value={day} max={ymd(new Date())} onChange={(e) => e.currentTarget.value && setDay(e.currentTarget.value)}
           styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
         <div>
@@ -1612,7 +1724,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         )}
         {sp.lot && <BigNumber label="尾数（おおよそ）" value={count} onChange={setCount} unit="尾" steps={[1, 10]} min={1} decimals={0} />}
         <ScaleWeight label={sp.lot ? '重量（合計）' : '重量'} value={kg} onChange={setKg} reading={reading} onReading={setReading} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
-        <div>
+        {!decl && <div>
           <Text className="field-label">漁獲期間</Text>
           <SimpleGrid cols={2} spacing="xs">
             <TextInput type="date" label="始まり" value={catchFrom} max={day} onChange={(e) => e.currentTarget.value && setCatchFrom(e.currentTarget.value)} />
@@ -1621,7 +1733,8 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
           <Text size="xs" c={periodOk ? 'dimmed' : 'red'} mt={6}>
             {periodOk ? 'この期間に、申告した海域で漁をしていたかを、船の位置の記録と照らし合わせます' : '漁獲期間は「始まり ≦ 終わり ≦ 水揚げ日」にしてください'}
           </Text>
-        </div>
+        </div>}
+        {decl && !periodOk && <Text size="sm" c="red">水揚げ日が、申告した漁獲期間の終わりより前です</Text>}
         <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真"
           hint={sp.lot ? '消費者の画面に「水揚げ時の様子」として大きく出ます。加工品にも引き継がれます' : '消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます'} />
         {itemId
@@ -1630,7 +1743,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!ship || !itemId || !periodOk || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo, scale: scaleOf(reading, kg) })}>
+            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo, scale: scaleOf(reading, kg), declarationId: decl?.id ?? null })}>
             {sp.lot ? '水揚げロットのIDを発行' : '個体IDを発行'}
           </Button>
         </Group>
@@ -1878,7 +1991,9 @@ function App() {
           : notice ? <ConsumerNotice status={notice} erased={erased} />
           : !items ? <Center mih={300}><Loader /></Center>
           : view === 'manage'
-            ? <Manager items={items} db={db} sel={sel} setSel={setSel} reload={reload} guard={guard} modal={modal} setModal={setModal} pane={pane} setPane={setPane} me={me} />
+            ? (me?.business?.role === 'vessel'
+              ? <VesselPage me={me} db={db} reload={reload} />
+              : <Manager items={items} db={db} sel={sel} setSel={setSel} reload={reload} guard={guard} modal={modal} setModal={setModal} pane={pane} setPane={setPane} me={me} />)
             : <ViewBoundary key={view}><ConsumerView items={items} sel={sel} setSel={setSel} demo={showNav} /></ViewBoundary>}
         {!chainEnabled && view === 'manage' && items && (
           <Text size="xs" c="dimmed" ta="center" pb="xl" px="md">ブロックチェーン未接続（記録とハッシュはDBに保存しています）</Text>

@@ -8,7 +8,7 @@ create extension if not exists pgcrypto;
 create table businesses (
   id          uuid primary key default gen_random_uuid(),
   name        text not null,
-  role        text not null check (role in ('market','processor','retailer','exporter','admin')),
+  role        text not null constraint businesses_role_check check (role in ('vessel','market','processor','retailer','exporter','admin')),
   wallet      text unique,              -- 署名に使うアドレス（0x...）
   address     text,                     -- 登録住所
   lat         double precision,         -- 登録住所の座標（記録した場所と比べる）
@@ -17,6 +17,7 @@ create table businesses (
   designated_suppliers uuid[],          -- 指定の仕入れ先：この事業者からだけ受け取る（null＝確かめない）
   created_at  timestamptz not null default now()
 );
+-- 漁船の事業者が乗る船（ships の後で足す）
 
 -- 利用者（Supabase Auth のユーザーと事業者をつなぐ）
 create table members (
@@ -38,6 +39,34 @@ create table ships (
   ais_sample  boolean not null default false, -- 表示例（画面に「見本」と出す）
   created_at  timestamptz not null default now()
 );
+
+alter table businesses add column ship_id uuid references ships(id);
+
+-- 漁獲の申告：漁船が自分の鍵で、水揚げの前に魚種・海域・漁獲期間・その場の位置を申告する（追記のみ）
+-- 市場は水揚げの登録で申告を選び、重さと港を足す（海域・期間は申告のまま）
+create table declarations (
+  id          text primary key,               -- DCL-261006-1A2B
+  ship_id     uuid not null references ships(id),
+  declared_by uuid not null references businesses(id),
+  species     text not null,
+  catch_area  text not null,
+  catch_from  date not null,
+  catch_to    date not null,
+  payload     jsonb not null,                 -- 指紋を取った内容（見込みの重さ・尾数・位置・写真）
+  hash        text not null,
+  tx_hash     text,
+  created_at  timestamptz not null default now()
+);
+create or replace function declarations_append_only() returns trigger language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then raise exception 'declarations は削除できません'; end if;
+  if (to_jsonb(new) - 'tx_hash') is distinct from (to_jsonb(old) - 'tx_hash') or old.tx_hash is not null then
+    raise exception 'declarations は書き換えできません（tx_hash の初回記録のみ可）';
+  end if;
+  return new;
+end $$;
+create trigger trg_declarations_append_only before update or delete on declarations
+for each row execute function declarations_append_only();
 
 -- はかり：自分の鍵で、量った重さと日時に署名する（address＝鍵のアドレス、小文字）。登録は record-event を通す
 create table scales (
@@ -179,6 +208,9 @@ create policy ships_read_all      on ships      for select using (true);
 create policy products_read_all   on products   for select using (true);
 alter table scales enable row level security;
 create policy scales_read_all on scales for select using (true);
+-- 申告はログインした事業者が読める（市場が水揚げの登録で選ぶ）
+alter table declarations enable row level security;
+create policy declarations_read on declarations for select to authenticated using (true);
 
 -- items / events は、ログインした事業者が「自分が記録した・自分に引き渡された（引き渡し中を含む）魚と、その上流」だけ読める
 -- 上流は、親（parent_id）と、加工ロットに入れた魚（inputs）の両方をたどる
@@ -243,8 +275,8 @@ grant select on businesses, products, scales to anon, authenticated;
 revoke select on ships from anon, authenticated;
 grant select (id, name, reg_no, permit_no, gear, owner_line_id, created_at, ais_sample) on ships to anon, authenticated;
 grant select on items, events, item_balance to authenticated;
-grant select on members to authenticated;
-revoke insert, update, delete, truncate on businesses, members, ships, products, items, events, scales from anon, authenticated;
+grant select on members, declarations to authenticated;
+revoke insert, update, delete, truncate on businesses, members, ships, products, items, events, scales, declarations from anon, authenticated;
 
 -- 重量チェック用ビューは、呼んだ人の権限で読む
 alter view item_balance set (security_invoker = true);

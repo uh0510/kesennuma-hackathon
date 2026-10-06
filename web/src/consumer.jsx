@@ -456,7 +456,8 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       lines: [ships.map(tr).join(' · '), t.mixChapter(origins.length)].filter(Boolean),
     } : {
       key: 'catch', en: 'CAUGHT', ja: '漁獲', title: tr(root.info.catchArea) ?? t.noArea,
-      lines: [root.info.shipName && `${tr(root.info.shipName)} · ${tr(root.info.gear) ?? ''}`, root.info.period && t.period(root.info.period)].filter(Boolean),
+      lines: [root.info.shipName && `${tr(root.info.shipName)} · ${tr(root.info.gear) ?? ''}`, root.info.period && t.period(root.info.period),
+        root.info.declaration && t.declaredBy(tr(root.info.shipName) ?? '', when(root.info.declaration.at))].filter(Boolean),
     }]
     const evs = main.flatMap((c) => c.rawEvents.map((e) => ({ e, c }))).filter(({ e }) => EV[e.type]).sort((a, b) => a.e.id - b.e.id)
     for (const { e, c } of evs) {

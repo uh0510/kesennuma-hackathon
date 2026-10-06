@@ -37,15 +37,16 @@ export async function fetchMe() {
 const SHIP_COLUMNS = 'id, name, reg_no, permit_no, gear, created_at'
 // ログインした事業者：見える範囲を全部読んで画面側で組み立てる（範囲は DB の RLS が絞る）
 export async function fetchAll() {
-  const [items, events, ships, products, businesses] = await Promise.all([
+  const [items, events, ships, products, businesses, declarations] = await Promise.all([
     supabase.from('items').select('*').order('created_at'),
     supabase.from('events').select('*').order('id'),
     supabase.from('ships').select(SHIP_COLUMNS).order('name'),
     supabase.from('products').select('*').order('name'),
     supabase.from('businesses').select('*'),
+    supabase.from('declarations').select('*').order('created_at', { ascending: false }),
   ])
-  for (const r of [items, events, ships, products, businesses]) if (r.error) throw r.error
-  return { items: items.data, events: events.data, ships: ships.data, products: products.data, businesses: businesses.data }
+  for (const r of [items, events, ships, products, businesses, declarations]) if (r.error) throw r.error
+  return { items: items.data, events: events.data, ships: ships.data, products: products.data, businesses: businesses.data, declarations: declarations.data }
 }
 
 // 消費者：QR の ID 1件分。status は 'ok' / 'inactive'（まだ販売前）/ 'missing'（ID がない）
@@ -98,7 +99,7 @@ const photoBody = (photo) => (photo ? { photo: { base64: photo.base64, mediaType
 // ---- 書き込み（record-event） ----
 async function recordEvent(body) {
   // 記録した場所：受け取り・販売開始のときだけ取る（取れなければ付けない。Edge Function が登録住所との距離を添える）
-  const needLocation = body.type === 'receive' || body.type === 'sell' || body.batch?.[0]?.type === 'receive' || body.batch?.[0]?.type === 'sell'
+  const needLocation = body.type === 'receive' || body.type === 'sell' || body.batch?.[0]?.type === 'receive' || body.batch?.[0]?.type === 'sell' || Boolean(body.declare)
   const location = needLocation ? await currentPosition() : null
   const { data, error } = await supabase.functions.invoke('record-event', { body: location ? { ...body, location } : body })
   if (error) {
@@ -127,9 +128,10 @@ export async function nextLandingId(prefix, knownIds) {
 // lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
 // catchFrom / catchTo は漁獲期間（YYYY-MM-DD）。period は表示用の文字（前からの形）
 // scale：はかりの署名つきの値（lib/scale.js の readingBody。なければ手入力）
-export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, scale }) {
+// declarationId：漁船の申告から登録するとき（魚種・船・海域・漁獲期間はサーバーが申告の値にする）
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, scale, declarationId }) {
   const period = `${catchFrom}〜${catchTo}`
-  const sr = scale ? { scale_reading: scale } : {}
+  const sr = { ...(scale ? { scale_reading: scale } : {}), ...(declarationId ? { declarationId } : {}) }
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
     newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landing_port: landingPort, landed_at: landedAt },
@@ -161,6 +163,11 @@ export async function processItem({ parent, childIds, productId, name, lots, pho
 // 入れた魚と重さの一覧はサーバーが記録に入れ、指紋に含める
 export function makeProcessLot({ itemId, name, inputs, photo }) {
   return recordEvent({ mix: { itemId, name, inputs }, ...photoBody(photo) })
+}
+
+// 漁獲の申告（漁船）：水揚げの前に、魚種・海域・漁獲期間・見込みの量を自分の鍵で申告する。場所も記録する
+export function declareCatch({ species, catchArea, catchFrom, catchTo, estKg, estCount, photo }) {
+  return recordEvent({ declare: { species, catchArea, catchFrom, catchTo, estKg, estCount }, ...photoBody(photo) })
 }
 
 // はかり：登録（ログインした事業者のはかりとして）と、登録の一覧

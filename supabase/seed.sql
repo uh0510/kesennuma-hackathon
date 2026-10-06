@@ -29,6 +29,11 @@ where id = '00000000-0000-0000-0000-000000000002';
 update businesses set designated_suppliers = array['00000000-0000-0000-0000-000000000002'::uuid]
 where id = '00000000-0000-0000-0000-000000000003';
 
+-- 漁船（migrations/015_vessel_declarations.sql と同じ）：第八 海鳴丸が自分の鍵で漁獲を申告する
+insert into businesses (id, name, role, wallet, ship_id)
+select '00000000-0000-0000-0000-000000000004', '第八 海鳴丸（サンプル漁船）', 'vessel', '0x9611aFB0e2d8DdC8E4C9154b8c05677Db49A971D', id
+from ships where name = '第八 海鳴丸';
+
 -- 歩留まりは仮の値（加工業者へのヒアリングで確定する）
 insert into products (name, species, storage, shelf_days, yield_min, yield_max) values
   ('メカジキ ロイン（冷凍）', 'メカジキ',     '−18℃以下', 182, 0.550, 0.700),
@@ -49,3 +54,5 @@ insert into members (user_id, business_id, display_name)
 select id, '00000000-0000-0000-0000-000000000002', '加工場（デモ）' from auth.users where email = 'processor@example.com';
 insert into members (user_id, business_id, display_name)
 select id, '00000000-0000-0000-0000-000000000003', '小売（デモ）' from auth.users where email = 'retail@example.com';
+insert into members (user_id, business_id, display_name)
+select id, '00000000-0000-0000-0000-000000000004', '漁船（デモ）' from auth.users where email = 'vessel@example.com';
