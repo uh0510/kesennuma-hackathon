@@ -160,16 +160,24 @@ function custodyOf(evs: any[]) {
   return { holder, pending, lastKg, actors, into }
 }
 
-// 加工品の重さの合計は、元（親）の重さを超えられない（量は増やせない）
+// 加工品の重さの合計は、元（親）の重さを超えられない（量は増やせない）。
+// さらに、製品マスタの歩留まりの上限（例：柵は 65%）も超えられない。上限は、この親から作った加工品の製品のうち一番大きいもの
 // 元の重さ：最後に分かっている重さ（受け取ったときに量った重さ）。なければ発行したときの重さ
 // deno-lint-ignore no-explicit-any
-async function checkYield(supa: any, parentId: string, parentEvs: any[], newKg: number) {
+async function checkYield(supa: any, parentId: string, parentEvs: any[], newKg: number, productId: string | null) {
   const { data: parent } = await supa.from('items').select('weight_kg').eq('id', parentId).maybeSingle()
   if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
   const baseKg = custodyOf(parentEvs).lastKg ?? Number(parent.weight_kg)
-  const { data: kids } = await supa.from('items').select('weight_kg').eq('parent_id', parentId)
+  const { data: kids } = await supa.from('items').select('weight_kg, product_id').eq('parent_id', parentId)
   const total = (kids ?? []).reduce((n: number, k: { weight_kg: number }) => n + Number(k.weight_kg), 0) + newKg
   if (total > baseKg + 0.005) throw new Error(`加工品の重さの合計（${total.toFixed(2)}kg）が、元の重さ（${baseKg}kg）を超えます`)
+  const ids = [...new Set([productId, ...(kids ?? []).map((k: { product_id: string | null }) => k.product_id)].filter(Boolean))]
+  if (!ids.length) return
+  const { data: prods } = await supa.from('products').select('yield_max').in('id', ids)
+  const caps = (prods ?? []).map((p: { yield_max: number | null }) => p.yield_max).filter((v: number | null) => v != null).map(Number)
+  if (!caps.length) return
+  const cap = Math.max(...caps)
+  if (total > baseKg * cap + 0.005) throw new Error(`歩留まり ${Math.round((total / baseKg) * 100)}% が上限 ${Math.round(cap * 100)}% を超えます（元 ${baseKg}kg → 加工品の合計は ${(baseKg * cap).toFixed(1)}kg まで）`)
 }
 
 // ==== はかり ====
@@ -366,7 +374,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
   let snaps: Record<string, any> = {}
   if (type === 'born') {
     const rows = list.map((b) => ({ ...pickNewItem(b.newItem ?? {}, 'born', parentId), species: parentSpecies }))
-    await checkYield(supa, parentId!, byItem[parentId!] ?? [], rows.reduce((n, r) => n + Number(r.weight_kg), 0))
+    await checkYield(supa, parentId!, byItem[parentId!] ?? [], rows.reduce((n, r) => n + Number(r.weight_kg), 0), (rows[0].product_id as string | null) ?? null)
     const { error } = await supa.from('items').insert(rows.map((r, i) => ({ ...r, id: ids[i], parent_id: parentId, created_by: actor })))
     if (error) throw error
     const product = rows[0].product_id ? (await supa.from('products').select('name, storage, shelf_days').eq('id', rows[0].product_id).single()).data : null
@@ -662,7 +670,7 @@ Deno.serve(async (req) => {
       if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
       row.species = parent.species
       const { data: pevs } = await supa.from('events').select('type, actor, payload').eq('item_id', parentId).order('id')
-      await checkYield(supa, parentId, pevs ?? [], Number(row.weight_kg))
+      await checkYield(supa, parentId, pevs ?? [], Number(row.weight_kg), (row.product_id as string | null) ?? null)
     }
     if (photo) body = { ...body, photo: await savePhoto(supa, itemId, photo) }
     const where = await locate(supa, actor, location)

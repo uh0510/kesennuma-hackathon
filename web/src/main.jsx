@@ -22,12 +22,11 @@ import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
   registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId, makeProcessLot,
-  registerScale, fetchScale, declareCatch, fetchVesselFollowup,
+  declareCatch, fetchVesselFollowup,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { checkAis } from './lib/ais.js'
 import { compressImage } from './lib/photo.js'
-import { scaleWallet, signReading, signRegister, parseReading, lastReading, readingBody } from './lib/scale.js'
 import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
 import { ymd, mdhm, shortHash, buildItems, ancestors, rootOf, originsOf, useVerify, useVerifyAll, useVesselActivities } from './model.js'
@@ -89,8 +88,6 @@ const AREAS = ['北西太平洋（FAO 61）', '三陸沖', '中西部太平洋�
 // 水揚げ港：遠洋の船は、海外（スペイン）で水揚げしてから冷凍で日本へ運ぶことがある
 const PORTS = ['気仙沼港', 'ラス・パルマス港（スペイン）']
 const MOBILE = '(max-width: 47.99em)'
-// はかりの端末として開いたか（?scale）
-const SCALE_MODE = new URLSearchParams(location.search).has('scale')
 
 const qrUrl = (id, pack) => `${location.origin}${location.pathname}?id=${encodeURIComponent(id)}${pack ? `&pack=${pack}` : ''}`
 // 記録できたことを知らせる。チェーンへの記録だけ失敗したときは、そのことも伝える
@@ -300,15 +297,12 @@ function useChecks({ items, it, myBiz, also = [], from = null, enabled = true })
     for (const x of bad) (g[x.short] ??= new Set()).add(x.name)
     row(key, title, bad.some((x) => x.level === 'ng') ? 'ng' : 'warn', Object.entries(g).map(([k, v]) => `${k}：${[...v].join('・')}`).join('、'))
   }
-  // 申告：漁船が自分で申告したか。計量：水揚げの重さがはかりの署名つきか
+  // 申告：漁船が自分で申告したか
   add('decl', '申告', origins.map((o) => (o.info.declaration
     ? { level: 'ok', text: `${o.info.declaration.by?.name ?? '漁船'}（${mdhm(o.info.declaration.at)}）`, name: o.info.shipName ?? o.id }
     : { level: 'warn', text: '漁船の申告なし', short: '申告なし', name: o.info.shipName ?? o.id })), '漁船が申告')
   add('area', '漁場', per.map((x) => x.area && { ...x.area, name: x.name }), '申告どおり')
   add('port', '入港', per.map((x) => x.port && { ...x.port, name: x.name }), '入港を確認')
-  add('scale', '計量', origins.map((o) => (o.info.landingScale
-    ? { level: 'ok', text: `${o.info.landingScale.name}（署名つき）`, name: o.info.shipName ?? o.id }
-    : { level: 'warn', text: '手入力', short: '手入力', name: o.info.shipName ?? o.id })), 'はかり（署名つき）')
   if (myBiz?.designated_ships) {
     add('ship', '漁船', origins.filter((o) => o.info.shipId).map((o) => {
       const ok = myBiz.designated_ships.includes(o.info.shipId)
@@ -584,120 +578,6 @@ function Sheet({ opened, onClose, title, children }) {
       transitionProps={{ transition: isMobile ? 'slide-up' : 'pop', duration: 250 }}>
       {children}
     </Modal>
-  )
-}
-
-// ---- はかり ----
-// 送る値：はかりで読んだ値と、記録する重さが同じときだけ（あとで数字を変えたら手入力）
-const scaleOf = (reading, kg) => (reading && Number(kg) === reading.kg ? readingBody(reading) : null)
-
-// 重さの入力：はかりの QR を読むと、署名つきの値が入る。数字を変えると手入力に戻る
-function ScaleWeight({ label, value, onChange, reading, onReading, ...num }) {
-  const [open, setOpen] = useState(false)
-  const signed = reading && Number(value) === reading.kg
-  return (
-    <div>
-      <BigNumber label={label} value={value} onChange={onChange} {...num} />
-      <Group justify="space-between" mt={6} wrap="nowrap">
-        {signed
-          ? <Text size="sm" c="green.8" fw={600}><IconScale size={14} style={{ verticalAlign: -2 }} /> はかりの値（署名つき）</Text>
-          : <Text size="sm" c="dimmed">手入力</Text>}
-        <Button size="compact-sm" variant="light" leftSection={<IconScale size={14} />} onClick={() => setOpen(true)}>はかりから読む</Button>
-      </Group>
-      <ScaleReadSheet opened={open} onClose={() => setOpen(false)} onRead={(r) => { onChange(r.kg); onReading(r); setOpen(false) }} />
-    </div>
-  )
-}
-
-// はかりの QR を読む（同じブラウザで開いたはかりの、最新の値も選べる）
-function ScaleReadSheet({ opened, onClose, onRead }) {
-  const [camErr, setCamErr] = useState(null)
-  const [text, setText] = useState('')
-  const last = opened ? lastReading() : null
-  useEffect(() => {
-    if (!opened) return
-    setCamErr(null)
-    let scanner, stopped = false
-    const t = setTimeout(() => {
-      scanner = new Html5Qrcode('scale-reader')
-      scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, (q) => {
-        const r = parseReading(q)
-        if (stopped || !r) return
-        stopped = true
-        scanner.stop().catch(() => {})
-        onRead(r)
-      }).catch((e) => setCamErr(String(e)))
-    }, 300)
-    return () => { clearTimeout(t); if (scanner?.isScanning) scanner.stop().catch(() => {}) }
-  }, [opened])
-  const pasted = text ? parseReading(text) : null
-  return (
-    <Sheet opened={opened} onClose={onClose} title="はかりから読む">
-      <Stack>
-        <Box id="scale-reader" style={{ minHeight: camErr ? 0 : 260, borderRadius: 18, overflow: 'hidden', background: camErr ? undefined : '#000' }} />
-        {camErr && <Text size="sm" c="dimmed">カメラを使えません</Text>}
-        {last && (
-          <Button variant="light" leftSection={<IconScale size={18} />} onClick={() => onRead(last)}>
-            この端末のはかり：{last.kg} kg（{mdhm(last.at)}）
-          </Button>
-        )}
-        <Group align="flex-end">
-          <TextInput style={{ flex: 1 }} label="はかりのコードを貼り付け" value={text} onChange={(e) => setText(e.currentTarget.value)} error={text && !pasted ? '読めないコードです' : null} />
-          <Button disabled={!pasted} onClick={() => onRead(pasted)}>使う</Button>
-        </Group>
-      </Stack>
-    </Sheet>
-  )
-}
-
-// はかりの画面（?scale）：はかりの端末で開く。登録すると、量った重さに署名して QR で出せる
-// 試作なので、重さは手で入れる（本物ははかりの表示を読み取る）
-function ScalePage({ me }) {
-  const address = useMemo(() => scaleWallet().address.toLowerCase(), [])
-  const [reg, setReg] = useState(undefined) // undefined＝確認中 / null＝未登録
-  const [name, setName] = useState('はかり1')
-  const [kg, setKg] = useState(120)
-  const [reading, setReading] = useState(null)
-  const [busy, setBusy] = useState(false)
-  useEffect(() => { fetchScale(address).then(setReg).catch(() => setReg(null)) }, [])
-  const mine = reg && reg.business_id === me.business?.id
-  const register = async () => {
-    setBusy(true)
-    try { await registerScale({ ...(await signRegister()), name }); setReg(await fetchScale(address)) } catch (e) { errMsg(e) } finally { setBusy(false) }
-  }
-  return (
-    <div className="login-page">
-      <div className="mgr-hero-glow" aria-hidden />
-      <div className="login-card fadein">
-        <Group justify="space-between" mb="lg">
-          <Title order={2} className="headline"><IconScale size={26} style={{ verticalAlign: -4 }} /> はかり</Title>
-          <Text size="sm" c="dimmed">{me.business?.name}</Text>
-        </Group>
-        {reg === undefined ? <Center><Loader /></Center> : !mine ? (
-          <Stack gap="md">
-            <Text size="sm">{reg ? 'ほかの事業者が登録したはかりです' : '未登録のはかりです'}</Text>
-            {!reg && <>
-              <TextInput label="はかりの名前" variant="default" value={name} onChange={(e) => setName(e.currentTarget.value)} />
-              <Button size="lg" loading={busy} disabled={!name} onClick={register}>登録する</Button>
-            </>}
-          </Stack>
-        ) : (
-          <Stack gap="md">
-            <Text size="sm" fw={600}>{reg.name}</Text>
-            <BigNumber label="重さ" value={kg} onChange={(v) => { setKg(v); setReading(null) }} unit="kg" steps={[1, 10]} min={0.01} decimals={2} />
-            <Button size="lg" leftSection={<IconScale size={20} />} disabled={!(Number(kg) > 0)} onClick={async () => setReading(await signReading(Number(kg)))}>量る</Button>
-            {reading && (
-              <Stack align="center" gap={6} className="glass" p="md" style={{ borderRadius: 18 }}>
-                <QRCodeSVG value={JSON.stringify(reading)} size={232} level="M" />
-                <Text fw={700} fz={28}>{reading.kg} kg</Text>
-                <Text size="xs" c="dimmed">{mdhm(reading.at)} · 署名つき · 30分有効</Text>
-              </Stack>
-            )}
-          </Stack>
-        )}
-        <Text size="xs" c="dimmed" ff="monospace" mt="lg" ta="center" style={{ wordBreak: 'break-all' }}>{address}</Text>
-      </div>
-    </div>
   )
 }
 
@@ -1008,9 +888,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
                   {e.wc && <WeightNote wc={e.wc} />}
                   {e.decl && <Text size="sm" c="green.8"><IconSailboat size={13} style={{ verticalAlign: -2 }} /> 漁船の申告：{e.decl.by?.name}（{mdhm(e.decl.at)}・<span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{e.decl.id}</span>）</Text>}
                   {e.checks && <ChecksNote checks={e.checks} />}
-                  {e.scale
-                    ? <Text size="sm" c="green.8"><IconScale size={13} style={{ verticalAlign: -2 }} /> はかり：{e.scale.name} {e.scale.kg} kg{e.scale.total ? '（合計）' : ''}・署名つき</Text>
-                    : (e.type === 'landing' || e.type === 'receive') && e.kg != null && <Text size="xs" c="dimmed">重さ：手入力</Text>}
+                  {e.scale && <Text size="sm" c="green.8"><IconScale size={13} style={{ verticalAlign: -2 }} /> はかり：{e.scale.name} {e.scale.kg} kg{e.scale.total ? '（合計）' : ''}・署名つき</Text>}
                   <Group gap="xs" mt={4}>
                     <Text size="xs" c="dimmed">{e.who}</Text><Code fz="xs">{shortHash(e.hash)}</Code><LocationNote loc={e.loc} />
                     {e.tx && <Anchor size="xs" href={explorerTx(e.tx)} target="_blank"><Group gap={2}><IconLink size={12} />チェーン</Group></Anchor>}
@@ -1133,7 +1011,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
         <BulkHandoverModal key={`b-${it.id}-${modal === 'bulk'}`} opened={modal === 'bulk'} onClose={() => setModal(null)} item={it} items={items} businesses={db.businesses} myId={me?.business?.id} myRole={me?.business?.role} busy={busy}
           onSave={(f) => run(() => handoverMany({ rows: f.ids.map((id) => ({ id, kg: items[id].custody.lastKg })), toId: f.toId, detail: f.detail || '出荷' }), (r) => notifyRecorded(`加工品 ${f.ids.length}ロット（合計 ${f.totalKg.toFixed(1)}kg）の引き渡しを記録しました`, r))} />
         <BulkReceiveModal key={`br-${it.id}-${modal === 'bulkReceive'}`} opened={modal === 'bulkReceive'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} myBiz={myBiz} busy={busy}
-          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail, checks: f.checks, scale: f.scale }), (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
+          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail, checks: f.checks }), (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
         <BulkSellModal key={`bs-${it.id}-${modal === 'bulkSell'}`} opened={modal === 'bulkSell'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} busy={busy}
           onSave={(f) => run(() => sellMany(f), (r) => notifyRecorded(`加工品 ${f.ids.length}ロットの販売開始を記録しました`, r))} />
         <ReceiveModal key={`r-${it.id}-${modal === 'receive'}`} opened={modal === 'receive'} onClose={() => setModal(null)} item={it} items={items} myBiz={myBiz} busy={busy}
@@ -1434,7 +1312,6 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, myBiz, busy, onS
   const sel = kids.filter((k) => picked.has(k.id))
   const expected = sel.reduce((n, k) => n + k.custody.lastKg, 0)
   const [total, setTotal] = useState(Math.round(expected * 100) / 100)
-  const [reading, setReading] = useState(null)
   const [detail, setDetail] = useState('')
   const packs = sel.reduce((n, k) => n + k.qty, 0)
   const d = expected > 0 && Number(total) > 0 ? weightDrift({ prevKg: expected, kg: Number(total) }) : null
@@ -1461,7 +1338,7 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, myBiz, busy, onS
             ))}
           </div>
         </div>
-        <ScaleWeight label="量った総重量" value={total} onChange={setTotal} reading={reading} onReading={setReading} unit="kg" steps={[0.1, 1]} min={0.01} decimals={2} />
+        <BigNumber label="量った総重量" value={total} onChange={setTotal} unit="kg" steps={[0.1, 1]} min={0.01} decimals={2} />
         {d && d.level !== 'ok' && (
           <Alert radius="md" color={d.level === 'gain' ? 'red' : 'yellow'} variant="light" icon={<IconAlertTriangle size={18} />}>
             {d.level === 'gain' ? `渡したときより ${(d.ratio * 100).toFixed(1)}% 重くなっています。別の魚が混ざっていないか確かめてください` : `渡したときより ${(-d.ratio * 100).toFixed(1)}% 軽くなっています。想定より大きく減っています`}（記録はできます）
@@ -1475,7 +1352,7 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, myBiz, busy, onS
           <Button loading={busy} disabled={sel.length === 0 || !(Number(total) > 0) || !canReceive(checks, ack)} leftSection={<IconPackageImport size={18} />}
             onClick={() => {
               const ratio = Number(total) / expected
-              onSave({ rows: sel.map((k) => ({ id: k.id, kg: Math.round(k.custody.lastKg * ratio * 100) / 100 })), detail, checks: checksPayload(checks), scale: scaleOf(reading, total) })
+              onSave({ rows: sel.map((k) => ({ id: k.id, kg: Math.round(k.custody.lastKg * ratio * 100) / 100 })), detail, checks: checksPayload(checks) })
             }}>{checks.loading ? '照合中…' : sel.length ? `${sel.length}ロットを受け取る` : '受け取るロットを選んでください'}</Button>
         </Group>
       </Stack>
@@ -1527,7 +1404,6 @@ function BulkSellModal({ opened, onClose, item, items, myId, busy, onSave }) {
 // 受け取る：重さを量って入れる。場所も記録する
 function ReceiveModal({ opened, onClose, item, items, myBiz, busy, onSave }) {
   const [kg, setKg] = useState(item.custody.lastKg)
-  const [reading, setReading] = useState(null)
   const checks = useChecks({ items, it: item, myBiz, from: { id: item.custody.holder, name: item.custody.holderName }, enabled: opened })
   const [ack, setAck] = useState(false)
   const [detail, setDetail] = useState('')
@@ -1542,7 +1418,7 @@ function ReceiveModal({ opened, onClose, item, items, myBiz, busy, onSave }) {
             <Text size="xs" c="dimmed">{item.custody.holderName} から · 渡したときの重さ {item.custody.lastKg} kg</Text>
           </div>
         </Group>
-        <ScaleWeight label="受け取った重さ" value={kg} onChange={setKg} reading={reading} onReading={setReading} unit="kg" steps={kgInput(item).steps} min={0.1} decimals={kgInput(item).decimals} />
+        <BigNumber label="受け取った重さ" value={kg} onChange={setKg} unit="kg" steps={kgInput(item).steps} min={0.1} decimals={kgInput(item).decimals} />
         {d && d.level !== 'ok' && (
           <Alert radius="md" color={d.level === 'gain' ? 'red' : 'yellow'} variant="light" icon={<IconAlertTriangle size={18} />}>
             {d.level === 'gain' ? `渡したときより ${(d.ratio * 100).toFixed(1)}% 重くなっています。別の魚が混ざっていないか確かめてください` : `渡したときより ${(-d.ratio * 100).toFixed(1)}% 軽くなっています。想定より大きく減っています`}（記録はできます）
@@ -1554,7 +1430,7 @@ function ReceiveModal({ opened, onClose, item, items, myBiz, busy, onSave }) {
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!canReceive(checks, ack)} leftSection={<IconPackageImport size={18} />}
-            onClick={() => onSave({ weightKg: Number(kg) || null, detail, checks: checksPayload(checks), scale: scaleOf(reading, kg) })}>{checks.loading ? '照合中…' : '受け取る'}</Button>
+            onClick={() => onSave({ weightKg: Number(kg) || null, detail, checks: checksPayload(checks) })}>{checks.loading ? '照合中…' : '受け取る'}</Button>
         </Group>
       </Stack>
     </Sheet>
@@ -1692,7 +1568,6 @@ function RegisterModal({ opened, onClose, busy, items, ships, declarations = [],
   const [catchFrom, setCatchFrom] = useState(ymd(new Date(Date.now() - 30 * 86400000)))
   const [catchTo, setCatchTo] = useState(ymd(new Date(Date.now() - 86400000)))
   const [kg, setKg] = useState(SPECIES[0].kg)
-  const [reading, setReading] = useState(null)
   const [count, setCount] = useState(1)
   const [grade, setGrade] = useState(GRADES[1])
   const [photo, setPhoto] = useState(null)
@@ -1801,7 +1676,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, declarations = [],
           </div>
         )}
         {sp.lot && <BigNumber label="尾数（おおよそ）" value={count} onChange={setCount} unit="尾" steps={[1, 10]} min={1} decimals={0} />}
-        <ScaleWeight label={sp.lot ? '重量（合計）' : '重量'} value={kg} onChange={setKg} reading={reading} onReading={setReading} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
+        <BigNumber label={sp.lot ? '重量（合計）' : '重量'} value={kg} onChange={setKg} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
         {!decl && <div>
           <Text className="field-label">漁獲期間</Text>
           <SimpleGrid cols={2} spacing="xs">
@@ -1821,7 +1696,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, declarations = [],
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!ship || !itemId || !periodOk || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo, scale: scaleOf(reading, kg), declarationId: decl?.id ?? null })}>
+            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo, declarationId: decl?.id ?? null })}>
             {sp.lot ? '水揚げロットのIDを発行' : '個体IDを発行'}
           </Button>
         </Group>
@@ -2035,8 +1910,6 @@ function App() {
 
   // ログイン状態を確かめ終えるまで待つ。QRから来た消費者以外は、ログインしていなければログイン画面
   if (!authChecked && !qid) return <Center mih="100dvh" bg="#09142c"><Loader color="white" /></Center>
-  // はかりの端末（?scale）：ログインした事業者のはかりとして使う
-  if (SCALE_MODE) return me ? <ScalePage me={me} /> : <LoginPage />
   if (!qid && !me) return <LoginPage />
   // 消費者として読んだが、まだ販売前・ID がない
   const notice = qid && trace && trace !== 'ok' ? trace : null

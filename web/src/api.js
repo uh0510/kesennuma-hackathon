@@ -127,11 +127,10 @@ export async function nextLandingId(prefix, knownIds) {
 // 水揚げを登録（IDを発行し、landing を記録）
 // lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
 // catchFrom / catchTo は漁獲期間（YYYY-MM-DD）。period は表示用の文字（前からの形）
-// scale：はかりの署名つきの値（lib/scale.js の readingBody。なければ手入力）
 // declarationId：漁船の申告から登録するとき（魚種・船・海域・漁獲期間はサーバーが申告の値にする）
-export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, scale, declarationId }) {
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, declarationId }) {
   const period = `${catchFrom}〜${catchTo}`
-  const sr = { ...(scale ? { scale_reading: scale } : {}), ...(declarationId ? { declarationId } : {}) }
+  const sr = declarationId ? { declarationId } : {}
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
     newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landing_port: landingPort, landed_at: landedAt },
@@ -177,20 +176,11 @@ export async function fetchVesselFollowup() {
   return data
 }
 
-// はかり：登録（ログインした事業者のはかりとして）と、登録の一覧
-export const registerScale = ({ address, name, sig }) => recordEvent({ registerScale: { address, name, sig } })
-export async function fetchScale(address) {
-  const { data, error } = await supabase.from('scales').select('address, name, business_id').eq('address', address.toLowerCase()).maybeSingle()
-  if (error) throw error
-  return data
-}
-
 // まとめて記録する（同じ種類の加工・引き渡し・受け取りだけ）。100件ずつに分けて送る
-// extra：1回目に一緒に送るもの（はかりの値など。はかりの値は合計の重さなので、100件を超えるときは送らない）
-async function sendBatch(entries, photo, extra = {}) {
+async function sendBatch(entries, photo) {
   let last = null
   for (let i = 0; i < entries.length; i += 100) {
-    last = await recordEvent({ batch: entries.slice(i, i + 100), ...(i === 0 ? photoBody(photo) : {}), ...(i === 0 && entries.length <= 100 ? extra : {}) })
+    last = await recordEvent({ batch: entries.slice(i, i + 100), ...(i === 0 ? photoBody(photo) : {}) })
   }
   return last
 }
@@ -206,8 +196,8 @@ export function sellMany({ ids, displayName }) {
 }
 
 // 加工品をまとめて受け取る：rows = [{ id, kg }]。checks は受け取る前に確かめた結果（{ ok, notes }。指紋に含まれる）
-export function receiveMany({ rows, detail, checks, scale }) {
-  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg, ...(checks ? { checks } : {}) } })), null, scale ? { scale_reading: scale } : {})
+export function receiveMany({ rows, detail, checks }) {
+  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg, ...(checks ? { checks } : {}) } })))
 }
 
 // 引き渡す（せり結果・出荷）：渡す相手の事業者を指定する。相手が受け取ると持ち主が移る
@@ -218,11 +208,10 @@ export function handover({ itemId, kind, toId, detail, weightKg }) {
 }
 
 // 受け取る：指定された相手だけができる。重さと場所、受け取る前に確かめた結果（checks）を記録する
-export function receiveItem({ itemId, weightKg, detail, checks, scale }) {
+export function receiveItem({ itemId, weightKg, detail, checks }) {
   const payload = { detail: detail || '受け取り' }
   if (weightKg) payload.weight_kg = weightKg
   if (checks) payload.checks = checks
-  if (scale) payload.scale_reading = scale
   return recordEvent({ itemId, type: 'receive', payload })
 }
 

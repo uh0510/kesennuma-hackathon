@@ -7,7 +7,8 @@ export function checkWeight({ parentKg, childrenKg, newKg, yieldMin, yieldMax })
   const ratio = parentKg > 0 ? total / parentKg : 0
   const issues = []
   if (total > parentKg) issues.push({ level: 'error', message: `子の重量の合計（${total.toFixed(1)}kg）が親（${parentKg}kg）を超えています` })
-  if (yieldMax != null && ratio > yieldMax) issues.push({ level: 'warning', message: `歩留まり ${(ratio * 100).toFixed(0)}% が上限 ${(yieldMax * 100).toFixed(0)}% を超えています` })
+  // 歩留まりの上限を超える発行は止める（サーバーも同じ決まりで断る）
+  if (yieldMax != null && ratio > yieldMax + 1e-9) issues.push({ level: 'error', message: `歩留まり ${(ratio * 100).toFixed(0)}% が上限 ${(yieldMax * 100).toFixed(0)}% を超えます（加工品の合計は ${(parentKg * yieldMax).toFixed(1)}kg まで）` })
   if (yieldMin != null && ratio < yieldMin && newKg.length > 0) issues.push({ level: 'info', message: `歩留まり ${(ratio * 100).toFixed(0)}%（下限 ${(yieldMin * 100).toFixed(0)}%）。残りがあれば続けて登録してください` })
   return { ok: !issues.some((i) => i.level === 'error'), total, ratio, issues }
 }

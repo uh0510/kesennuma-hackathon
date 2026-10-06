@@ -508,15 +508,19 @@ function FishSvg({ shape, segs, label }) {
 const MIX_COLORS = ['#ff9f0a', '#30d158', '#bf5af2', '#ff375f', '#64d2ff', '#ffd60a']
 
 // 重さの内訳：元の魚（加工ロットなら入れた魚）を魚の形で描き、加工品ごとに切り分ける
+// 加工品を見ているときは親を、元の魚を見ているときはその魚を描く（加工前なら1色で「未加工」）
 function Family({ items, it, t, lang }) {
-  const parent = items[it.parent]
+  const self = !it.parent
+  const parent = self ? it : items[it.parent]
   if (!parent) return null
   const tr = (x) => term(lang, x)
   const kids = parent.children.map((id) => items[id])
   const used = kids.reduce((n, k) => n + k.kg, 0)
   const rest = Math.max(0, parent.kg - used)
   const others = kids.filter((k) => k.id !== it.id)
-  const segs = [{ kg: it.kg, current: true }, ...others.map((k) => ({ kg: k.kg })), ...(rest > 0 ? [{ kg: rest, rest: true }] : [])]
+  const unprocessed = self && kids.length === 0
+  const segs = unprocessed ? [{ kg: parent.kg, current: true }]
+    : [...(self ? [] : [{ kg: it.kg, current: true }]), ...others.map((k) => ({ kg: k.kg })), ...(rest > 0 ? [{ kg: rest, rest: true }] : [])]
   const pct = (kg) => Math.round((kg / parent.kg) * 100)
   // 加工ロット：入れた魚（重さに比例した大きさ）と、その割合
   const inputs = parent.unit === 'mix' ? parent.info.inputs.map((id) => items[id]).filter(Boolean) : []
@@ -527,7 +531,9 @@ function Family({ items, it, t, lang }) {
     <section className="story-section">
       <motion.div {...reveal}>
         <div className="eyebrow-dark">WEIGHT BALANCE</div>
-        <h2 className="story-h2">{t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, tr(parent.name), kids.length)}</h2>
+        <h2 className="story-h2">{unprocessed
+          ? <>{tr(parent.name)} <CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" /><br />→ {t.notProcessed}</>
+          : t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, tr(parent.name), kids.length)}</h2>
         <p className="story-lead">{parent.unit === 'lot' ? t.familyLeadLot : parent.unit === 'mix' ? t.familyLeadMix : t.familyLead}</p>
       </motion.div>
       {inputs.length > 0 && (
@@ -547,11 +553,13 @@ function Family({ items, it, t, lang }) {
       <div className="fish-main">
         <FishSvg shape={fishOf(parent.species)} segs={segs} label={tr(parent.name)} />
       </div>
-      <div className="weight-legend">
-        <span><i className="sw cur" />{t.thisProduct} {it.kg} kg（{pct(it.kg)}%）</span>
-        {others.length > 0 && <span><i className="sw sib" />{t.otherProducts} {others.length} · {others.reduce((n, k) => n + k.kg, 0).toFixed(1)} kg</span>}
-        <span><i className="sw rest" />{t.trimmings} {rest.toFixed(1)} kg（{pct(rest)}%）</span>
-      </div>
+      {!unprocessed && (
+        <div className="weight-legend">
+          {!self && <span><i className="sw cur" />{t.thisProduct} {it.kg} kg（{pct(it.kg)}%）</span>}
+          {others.length > 0 && <span><i className="sw sib" />{self ? t.products : t.otherProducts} {t.lots(others.length)} · {others.reduce((n, k) => n + k.kg, 0).toFixed(1)} kg（{pct(others.reduce((n, k) => n + k.kg, 0))}%）</span>}
+          <span><i className="sw rest" />{t.trimmings} {rest.toFixed(1)} kg（{pct(rest)}%）</span>
+        </div>
+      )}
     </section>
   )
 }
