@@ -167,7 +167,8 @@ function JourneyMap({ stops, t, ais }) {
     try {
       map = new maplibregl.Map({
         container: box.current, style: MAP_STYLE, interactive: false, attributionControl: { compact: true },
-        center: stops[0].at, zoom: 0.8,
+        // 地球儀の大きさ：スマホでは小さめに（字幕と重ならないように）
+        center: stops[0].at, zoom: box.current.clientWidth < 600 ? 0.2 : 0.8,
         // 軽くする：高精細の画面でも描く細かさは 1.5 倍まで。文字のふわっと出る動きはなし
         pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5), fadeDuration: 0,
       })
@@ -257,7 +258,7 @@ function JourneyMap({ stops, t, ais }) {
 
       // 1. 地球儀から、漁をした海へ
       setCap({ phase: t.replayFishing, main: stops[0].sub ?? stops[0].label })
-      await move('jumpTo', { center: area, zoom: 0.8, pitch: 0, bearing: 0 })
+      await move('jumpTo', { center: area, zoom: box.current.clientWidth < 600 ? 0.2 : 0.8, pitch: 0, bearing: 0 })
       await sleep(600)
       const fb = new maplibregl.LngLatBounds(area, area)
       pts.forEach((p) => fb.extend(p))
