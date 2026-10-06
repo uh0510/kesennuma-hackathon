@@ -655,9 +655,10 @@ function QrBlock({ it, onPrint, size = 112, onBand = false }) {
       <Paper p={8} radius="md" shadow={onBand ? 'md' : undefined} style={{ background: 'white' }}>
         <Box style={{ opacity: it.qr === 'active' ? 1 : 0.4 }}><QRCodeSVG value={qrUrl(it.id)} size={size} /></Box>
       </Paper>
+      {/* QR は販売開始を記録すると自動で公開になる（ボタンはない）。加工した元の魚は、加工品のラベルの QR で公開する */}
       {it.qr === 'active'
         ? <Badge variant={onBand ? 'white' : 'light'} color="green" tt="none" leftSection={<IconCircleCheckFilled size={12} />}>消費者に公開中</Badge>
-        : <Badge variant={onBand ? 'white' : 'light'} color="gray" tt="none">販売開始で公開</Badge>}
+        : <Badge variant={onBand ? 'white' : 'light'} color="gray" tt="none">{it.children.length > 0 ? '加工品のラベルで公開' : '販売開始で自動公開'}</Badge>}
       {onPrint && (
         <Button size="compact-xs" variant={onBand ? 'white' : 'subtle'} leftSection={<IconPrinter size={13} />} onClick={onPrint}>
           {it.qty > 1 ? `ラベルを印刷（${it.qty}枚）` : 'ラベルを印刷'}

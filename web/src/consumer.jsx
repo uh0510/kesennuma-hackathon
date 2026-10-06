@@ -475,12 +475,19 @@ const fishOf = (species) => (species === 'メカジキ' ? FISH.sword : species =
 let fishSeq = 0
 
 // 魚の形を、重さの割合で頭から尾へ切り分けて塗る。segs＝[{ kg, fill, current? }]（rest＝端材は斜線）
-function FishSvg({ shape, segs, label }) {
+function FishSvg({ shape, segs, label, packLabel }) {
   const id = useMemo(() => `fish${++fishSeq}`, [])
   const total = segs.reduce((n, s) => n + s.kg, 0) || 1
   const W = shape.x1 - shape.x0
   let x = shape.x0
   const parts = segs.map((s) => { const w = (W * s.kg) / total; const p = { ...s, x, w }; x += w; return p })
+  // 1パックは魚全体のごく一部で、そのままだと見えない。見える最小の幅にして、続くロットの部分から差し引く
+  const pi = parts.findIndex((p) => p.pack)
+  if (pi >= 0 && parts[pi].w < 5) {
+    const d = 5 - parts[pi].w
+    parts[pi].w = 5
+    if (parts[pi + 1]) { parts[pi + 1].x += d; parts[pi + 1].w = Math.max(0, parts[pi + 1].w - d) }
+  }
   return (
     <svg viewBox={shape.vb} className="fish-svg" role="img" aria-label={label}>
       <defs>
@@ -495,12 +502,18 @@ function FishSvg({ shape, segs, label }) {
         <rect x={shape.x0 - 20} y="0" width={W + 40} height="160" fill="#1c1c1e" />
         {parts.map((p, i) => (
           <rect key={i} className="fish-seg" style={{ animationDelay: `${0.15 + i * 0.12}s` }} x={p.x} y="0" width={p.w + 0.5} height="160"
-            fill={p.rest ? `url(#${id}-hatch)` : p.current ? `url(#${id}-cur)` : p.fill ?? '#3a3a3c'} />
+            fill={p.rest ? `url(#${id}-hatch)` : p.current ? `url(#${id}-cur)` : p.lot ? 'rgba(10, 132, 255, 0.35)' : p.fill ?? '#3a3a3c'} />
         ))}
         {parts.slice(1).map((p, i) => <line key={i} x1={p.x} x2={p.x} y1="0" y2="160" stroke="#000" strokeWidth="2.5" />)}
       </g>
       <path d={shape.body} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
       <circle cx={shape.eye[0]} cy={shape.eye[1]} r="4.5" fill="#000" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" />
+      {pi >= 0 && packLabel && (
+        <g className="fish-pack-mark">
+          <path d={`M${parts[pi].x + parts[pi].w / 2 - 6},-2 L${parts[pi].x + parts[pi].w / 2 + 6},-2 L${parts[pi].x + parts[pi].w / 2},8 Z`} fill="#64d2ff" />
+          <text x={parts[pi].x + parts[pi].w / 2} y="-8" textAnchor="middle" fill="#64d2ff" fontSize="13" fontWeight="700">{packLabel}</text>
+        </g>
+      )}
     </svg>
   )
 }
@@ -519,9 +532,16 @@ function Family({ items, it, t, lang }) {
   const rest = Math.max(0, parent.kg - used)
   const others = kids.filter((k) => k.id !== it.id)
   const unprocessed = self && kids.length === 0
+  // 消費者が手にしているのは1パック。ロットのうちの1パック分を明るく、残りのロットを薄い青に
+  const packKg = !self && it.qty > 1 && it.unitKg ? it.unitKg : null
+  // パックの帯はロットの真ん中に置く（魚の胴の太いところで見えるように）
+  const half = packKg ? (it.kg - packKg) / 2 : 0
+  const mine = self ? [] : packKg ? [{ kg: half, lot: true }, { kg: packKg, current: true, pack: true }, { kg: half, lot: true }] : [{ kg: it.kg, current: true }]
   const segs = unprocessed ? [{ kg: parent.kg, current: true }]
-    : [...(self ? [] : [{ kg: it.kg, current: true }]), ...others.map((k) => ({ kg: k.kg })), ...(rest > 0 ? [{ kg: rest, rest: true }] : [])]
-  const pct = (kg) => Math.round((kg / parent.kg) * 100)
+    : [...mine, ...others.map((k) => ({ kg: k.kg })), ...(rest > 0 ? [{ kg: rest, rest: true }] : [])]
+  // 割合：1% 未満は小数1けた
+  const pct = (kg) => { const v = (kg / parent.kg) * 100; return v > 0 && v < 1 ? v.toFixed(1) : Math.round(v) }
+  const g = (kg) => (kg >= 1 ? `${kg} kg` : `${Math.round(kg * 1000)} g`)
   // 加工ロット：入れた魚（重さに比例した大きさ）と、その割合
   const inputs = parent.unit === 'mix' ? parent.info.inputs.map((id) => items[id]).filter(Boolean) : []
   const inKg = (o) => parent.info.inputKg[o.id] ?? o.kg
@@ -551,11 +571,13 @@ function Family({ items, it, t, lang }) {
         </>
       )}
       <div className="fish-main">
-        <FishSvg shape={fishOf(parent.species)} segs={segs} label={tr(parent.name)} />
+        <FishSvg shape={fishOf(parent.species)} segs={segs} label={tr(parent.name)} packLabel={packKg ? t.thisPack : null} />
       </div>
       {!unprocessed && (
         <div className="weight-legend">
-          {!self && <span><i className="sw cur" />{t.thisProduct} {it.kg} kg（{pct(it.kg)}%）</span>}
+          {!self && packKg && <span><i className="sw cur" />{t.thisPack} {g(packKg)}（{pct(packKg)}%）</span>}
+          {!self && packKg && <span><i className="sw lot" />{t.sameLot(it.qty)} · {it.kg} kg（{pct(it.kg)}%）</span>}
+          {!self && !packKg && <span><i className="sw cur" />{t.thisProduct} {it.kg} kg（{pct(it.kg)}%）</span>}
           {others.length > 0 && <span><i className="sw sib" />{self ? t.products : t.otherProducts} {t.lots(others.length)} · {others.reduce((n, k) => n + k.kg, 0).toFixed(1)} kg（{pct(others.reduce((n, k) => n + k.kg, 0))}%）</span>}
           <span><i className="sw rest" />{t.trimmings} {rest.toFixed(1)} kg（{pct(rest)}%）</span>
         </div>

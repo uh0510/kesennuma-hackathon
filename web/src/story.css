@@ -137,7 +137,7 @@
 .chapter-line { color: var(--fg-2); font-size: 13px; margin: 3px 0 0; }
 
 /* 重さの内訳 */
-.fish-main { margin-top: 24px; max-width: 680px; }
+.fish-main { margin-top: 44px; max-width: 680px; }
 .mix-inputs { max-width: 680px; }
 .fish-svg { display: block; width: 100%; height: auto; overflow: visible; }
 .fish-seg { animation: fish-seg 700ms var(--ease-out, ease-out) both; }
@@ -148,6 +148,7 @@
 .mix-input small { font-size: 12px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .mix-merge { margin-top: 14px; font-size: 12px; color: var(--fg-2); letter-spacing: 0.02em; }
 .weight-legend .sw.cur { background: linear-gradient(135deg, #0a84ff, #64d2ff); }
+.weight-legend .sw.lot { background: rgba(10, 132, 255, 0.35); }
 @media (prefers-reduced-motion: reduce) { .fish-seg { animation: none; } }
 .weight-legend { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 16px; font-size: 13px; color: var(--fg-2); }
 .weight-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
