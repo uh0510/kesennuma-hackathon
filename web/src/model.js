@@ -1,6 +1,6 @@
 // 画面で使うデータの組み立てと、改ざん検証のフック（管理画面・消費者画面で共通）
 import { useState, useEffect } from 'react'
-import { verifyItem, verifyPhotos, photoUrl } from './api.js'
+import { verifyItem, verifyPhotos, photoUrl, fetchVesselActivity } from './api.js'
 
 // 日付は日本時間で表示する
 export const ymd = (s) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date(s))
@@ -51,7 +51,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
       },
       events: evs.map((e) => ({
         id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash,
-        loc: e.payload?.location ?? null, home: biz[e.actor]?.lat != null ? [biz[e.actor].lng, biz[e.actor].lat] : null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null,
+        loc: e.payload?.location ?? null, home: biz[e.actor]?.lat != null ? [biz[e.actor].lng, biz[e.actor].lat] : null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null, checks: e.payload?.checks ?? null,
       })),
       custody: custodyOf(evs, biz, Number(r.weight_kg)),
       sold: evs.some((e) => e.type === 'sell'),
@@ -133,4 +133,28 @@ export function useVerifyAll(chain) {
     return () => { alive = false }
   }, [key])
   return res
+}
+
+// 船の位置の記録（AIS）。元の1尾（root）の船・水揚げ日・漁獲期間で問い合わせる
+// 返す値：undefined＝船にひも付いていない / null＝読み込み中 / { error }＝読めなかった / それ以外＝vessel-activity の結果
+// 同じ問い合わせは画面を移っても1回だけ（Global Fishing Watch への問い合わせを減らす）
+const aisCache = new Map()
+export function useVesselActivity(root) {
+  const shipId = root?.info.shipId
+  const key = shipId ? [shipId, root.info.landedAt ?? root.info.createdAt, root.info.catchFrom, root.info.catchTo].join('|') : ''
+  const [ais, setAis] = useState(undefined)
+  useEffect(() => {
+    if (!key) { setAis(undefined); return }
+    let alive = true
+    setAis(null)
+    if (!aisCache.has(key)) {
+      const p = fetchVesselActivity(shipId, root.info.landedAt ?? root.info.createdAt, root.info.catchFrom, root.info.catchTo)
+        .then((r) => (r.linked ? r : undefined))
+        .catch((e) => { aisCache.delete(key); return { error: e.message } })
+      aisCache.set(key, p)
+    }
+    aisCache.get(key).then((r) => alive && setAis(r))
+    return () => { alive = false }
+  }, [key])
+  return ais
 }

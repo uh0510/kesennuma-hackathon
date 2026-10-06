@@ -13,6 +13,8 @@ create table businesses (
   address     text,                     -- 登録住所
   lat         double precision,         -- 登録住所の座標（記録した場所と比べる）
   lng         double precision,
+  designated_ships     uuid[],          -- 指定の仕入れ先：この船の魚だけを買う（null＝確かめない）
+  designated_suppliers uuid[],          -- 指定の仕入れ先：この事業者からだけ受け取る（null＝確かめない）
   created_at  timestamptz not null default now()
 );
 

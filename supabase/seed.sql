@@ -21,6 +21,14 @@ insert into ships (name, reg_no, permit_no, gear) values
 -- 第五 浜風丸：作りものの見本データ（申告と違う海域の例）。実在の船を表示例に使うひも付けは docs/ の SQL で行う（公開しない）
 update ships set gfw_vessel_id = 'sample:south-pacific', ais_sample = true where name = '第五 浜風丸';
 
+-- 指定の仕入れ先（migrations/012_designated_suppliers.sql と同じ）：サンプル加工は第八 海鳴丸と第十八 潮丸の魚を市場からだけ、サンプル小売はサンプル加工からだけ
+update businesses set
+  designated_ships = array(select id from ships where name in ('第八 海鳴丸', '第十八 潮丸') order by name),
+  designated_suppliers = array['00000000-0000-0000-0000-000000000001'::uuid]
+where id = '00000000-0000-0000-0000-000000000002';
+update businesses set designated_suppliers = array['00000000-0000-0000-0000-000000000002'::uuid]
+where id = '00000000-0000-0000-0000-000000000003';
+
 -- 歩留まりは仮の値（加工業者へのヒアリングで確定する）
 insert into products (name, species, storage, shelf_days, yield_min, yield_max) values
   ('メカジキ ロイン（冷凍）', 'メカジキ',     '−18℃以下', 182, 0.550, 0.700),

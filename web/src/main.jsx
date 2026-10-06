@@ -24,10 +24,11 @@ import {
   registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
+import { checkAis } from './lib/ais.js'
 import { compressImage } from './lib/photo.js'
 import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
-import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify } from './model.js'
+import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify, useVerifyAll, useVesselActivity } from './model.js'
 import { ConsumerNotice, ConsumerView } from './consumer.jsx'
 
 // Apple Blue を中心にした色の段階（Mantine は10段階で持つ）
@@ -246,6 +247,106 @@ function WeightNote({ wc }) {
   if (d.level === 'gain') return <Badge color="red" tt="none" size="sm">{txt}：増えています（すり替え・水増しの疑い）</Badge>
   if (d.level === 'loss') return <Badge color="yellow" tt="none" size="sm">{txt}：想定より大きく減っています</Badge>
   return <Text size="xs" c="dimmed">{txt}</Text>
+}
+
+// ---- 仕入れチェック（買う・受け取る前に） ----
+// 記録の書き換え・申告と船の位置（AIS）・指定の仕入れ先 を1行ずつ。level：'ok' / 'warn' / 'ng' / 'wait'
+// also：一緒に確かめる記録（まとめて受け取る加工品など）。from：渡し手の事業者（指定の仕入れ先か確かめる）
+// enabled＝false のあいだは問い合わせない（閉じている受け取りの画面のため）
+function useChecks({ items, it, myBiz, also = [], from = null, enabled = true }) {
+  const root = rootOf(items, it.id)
+  const verify = useVerifyAll(enabled ? [...ancestors(items, it.id), it, ...also] : [])
+  const ais = useVesselActivity(enabled ? root : null)
+  const rows = []
+  const row = (key, title, level, text) => rows.push({ key, title, level, text })
+  row('rec', '記録', !verify ? 'wait' : verify.ok ? 'ok' : 'ng',
+    !verify ? '照合中…' : verify.ok ? `書き換えなし（${verify.count}件）` : '書き換えの疑い')
+
+  const { catchArea, port, shipName, shipId } = root.info
+  if (ais === undefined) row('area', '漁場', 'warn', '船の位置データなし')
+  else if (ais === null) row('area', '漁場', 'wait', '照合中…')
+  else if (ais.error) row('area', '漁場', 'warn', '船の位置データを読み込めません')
+  else {
+    const res = checkAis({ catchArea, landingPort: port, landedAt: root.info.landedAt ?? root.info.createdAt, ais })
+    const mark = ais.sample ? '（見本）' : ''
+    const actual = res.top[0] ? `実際は FAO ${res.top[0][0]}` : ''
+    row('area', '漁場', { ok: 'ok', partial: 'warn', ng: 'ng', none: 'warn' }[res.area], {
+      ok: `申告どおり（${catchArea}）`, partial: `一部が申告外（${actual}）`, ng: `申告と違う（${actual}）`,
+      none: ais.declared ? '漁獲期間に操業データなし' : '操業データなし',
+    }[res.area] + mark)
+    if (res.port) row('port', '入港', res.port === 'ok' ? 'ok' : 'warn', (res.port === 'ok' ? `${port} ${ymd(res.visit.start)}` : `${port}の入港データなし`) + mark)
+  }
+
+  if (myBiz?.designated_ships && shipId) {
+    const ok = myBiz.designated_ships.includes(shipId)
+    row('ship', '漁船', ok ? 'ok' : 'ng', `${shipName}（${ok ? '指定船' : '指定外'}）`)
+  }
+  if (myBiz?.designated_suppliers && from) {
+    const ok = myBiz.designated_suppliers.includes(from.id)
+    row('from', '仕入れ先', ok ? 'ok' : 'ng', `${from.name}（${ok ? '指定先' : '指定外'}）`)
+  }
+  const issues = rows.filter((r) => r.level === 'ng' || r.level === 'warn')
+  return { rows, issues, loading: rows.some((r) => r.level === 'wait'), sample: ais?.sample ?? false }
+}
+
+const CHECK_LOOK = {
+  ok: { color: 'green', Icon: IconCircleCheckFilled }, warn: { color: 'yellow', Icon: IconAlertTriangle },
+  ng: { color: 'red', Icon: IconAlertTriangle }, wait: { color: 'gray', Icon: null },
+}
+function CheckRows({ rows }) {
+  return (
+    <div className="inset-list glass">
+      {rows.map((r) => {
+        const L = CHECK_LOOK[r.level]
+        return (
+          <Group key={r.key} gap="sm" wrap="nowrap" className="inset-row" style={{ justifyContent: 'flex-start', alignItems: 'center' }}>
+            <ThemeIcon size={24} radius="xl" variant="light" color={L.color} style={{ flexShrink: 0 }}>{L.Icon ? <L.Icon size={14} /> : <Loader size={12} color="gray" />}</ThemeIcon>
+            <Text size="sm" className="label" w={64}>{r.title}</Text>
+            <Text size="sm" fw={r.level === 'ng' ? 700 : 500} c={r.level === 'ng' ? 'red.7' : undefined} style={{ minWidth: 0 }}>{r.text}</Text>
+          </Group>
+        )
+      })}
+    </div>
+  )
+}
+
+// 受け取る前のチェック：注意があれば、確認のチェックを付けるまで受け取れない
+// チェックの結果は受け取りの記録（payload.checks）に入り、指紋に含まれる
+function ReceiveChecks({ checks, ack, setAck }) {
+  const n = checks.issues.length
+  return (
+    <div>
+      <Text className="field-label">仕入れチェック</Text>
+      <CheckRows rows={checks.rows} />
+      {!checks.loading && n > 0 && (
+        <Alert mt="sm" radius="md" color={checks.issues.some((r) => r.level === 'ng') ? 'red' : 'yellow'} variant="light" icon={<IconAlertTriangle size={18} />} title={`注意 ${n}件`}>
+          <Checkbox checked={ack} onChange={(e) => setAck(e.currentTarget.checked)} label="確認のうえ受け取る" />
+        </Alert>
+      )}
+    </div>
+  )
+}
+const checksPayload = (checks) => ({ ok: checks.issues.length === 0, notes: checks.issues.map((r) => `${r.title}：${r.text}`) })
+const canReceive = (checks, ack) => !checks.loading && (checks.issues.length === 0 || ack)
+
+// 詳細の「紐づく情報」の一番上（受け取る相手には仕入れ先の行も出る）
+function DetailChecks({ items, it, myBiz, from }) {
+  const checks = useChecks({ items, it, myBiz, from })
+  return (
+    <div>
+      <Text className="section-label">仕入れチェック</Text>
+      <CheckRows rows={checks.rows} />
+      <Text size="xs" c="dimmed" mt={6}>船の位置：Global Fishing Watch（約4日遅れ）{checks.sample ? '　※（見本）は表示用の見本データ' : ''}</Text>
+    </div>
+  )
+}
+
+// 履歴：受け取り時のチェック
+function ChecksNote({ checks }) {
+  if (checks.ok) return <Text size="sm" c="green.8"><IconShieldCheck size={13} style={{ verticalAlign: -2 }} /> 受け取り時のチェック：問題なし</Text>
+  return (
+    <Text size="sm" c="orange.8"><IconAlertTriangle size={13} style={{ verticalAlign: -2 }} /> 受け取り時のチェック：注意 {checks.notes.length}件（{checks.notes.join('／')}）</Text>
+  )
 }
 
 // 記録の画面を開いたら位置を取りにいき、取れたか・取れなかった理由を出す（取れなくても記録はできる）
@@ -467,7 +568,7 @@ function usePrintLabels() {
   return [job, setJob]
 }
 
-function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, me, onPrint }) {
+function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, me, myBiz, onPrint }) {
   const [tab, setTab] = useState('info')
   useEffect(() => setTab('info'), [it.id])
   const anc = ancestors(items, it.id)
@@ -594,6 +695,8 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
       <SegmentedControl fullWidth value={tab} onChange={setTab} size="md"
         data={[{ value: 'info', label: '紐づく情報' }, { value: 'log', label: `履歴 ${it.events.length}` }, { value: 'tree', label: '親子関係' }]} />
 
+      {tab === 'info' && <DetailChecks items={items} it={it} myBiz={myBiz} from={isRecipient ? { id: cu.holder, name: cu.holderName } : null} />}
+
       {tab === 'info' && chainPhotos.length > 0 && (
         <div>
           <Text className="section-label">写真（水揚げ時から引き継ぎ）</Text>
@@ -638,6 +741,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
                   {e.to && <Text size="sm"><IconArrowRight size={13} style={{ verticalAlign: -2 }} /> {e.to.name} へ引き渡し</Text>}
                   {e.type === 'receive' && e.from && <Text size="sm">{e.from.name} から受け取り</Text>}
                   {e.wc && <WeightNote wc={e.wc} />}
+                  {e.checks && <ChecksNote checks={e.checks} />}
                   <Group gap="xs" mt={4}>
                     <Text size="xs" c="dimmed">{e.who}</Text><Code fz="xs">{shortHash(e.hash)}</Code><LocationNote loc={e.loc} />
                     {e.tx && <Anchor size="xs" href={explorerTx(e.tx)} target="_blank"><Group gap={2}><IconLink size={12} />チェーン</Group></Anchor>}
@@ -683,6 +787,8 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
 
   // 自分宛てに引き渡し中のもの（元の1尾ごとにまとめる）
   const myId = me?.business?.id
+  // 自分の事業者の行（指定の仕入れ先を持つ）
+  const myBiz = db.businesses.find((b) => b.id === myId) ?? null
   const inbox = useMemo(() => {
     if (!myId) return []
     const g = {}
@@ -699,7 +805,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
   const canRegister = !me || me.business?.role === 'market'
   const list = <ItemList items={items} currentRoot={it && rootOf(items, it.id).id} onPick={pick} onRegister={canRegister ? () => open('register') : null} onScan={() => setModal('scan')} isMobile={isMobile} inbox={inbox} />
   const detail = it
-    ? <Detail items={items} it={it} setSel={setSel} busy={busy} open={open} run={run} guard={guard} isMobile={isMobile} onBack={() => setPane('list')} me={me} onPrint={setPrintJob} />
+    ? <Detail items={items} it={it} setSel={setSel} busy={busy} open={open} run={run} guard={guard} isMobile={isMobile} onBack={() => setPane('list')} me={me} myBiz={myBiz} onPrint={setPrintJob} />
     : (
       <Card><Center mih={260}><Stack align="center" gap="xs">
         <KindIcon kind="ind" size={56} />
@@ -756,11 +862,11 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
           onSave={(f) => run(() => handover({ itemId: it.id, ...f }), (r) => notifyRecorded('引き渡しを記録しました（相手が受け取ると持ち主が移ります）', r))} />
         <BulkHandoverModal key={`b-${it.id}-${modal === 'bulk'}`} opened={modal === 'bulk'} onClose={() => setModal(null)} item={it} items={items} businesses={db.businesses} myId={me?.business?.id} myRole={me?.business?.role} busy={busy}
           onSave={(f) => run(() => handoverMany({ rows: f.ids.map((id) => ({ id, kg: items[id].custody.lastKg })), toId: f.toId, detail: f.detail || '出荷' }), (r) => notifyRecorded(`加工品 ${f.ids.length}ロット（合計 ${f.totalKg.toFixed(1)}kg）の引き渡しを記録しました`, r))} />
-        <BulkReceiveModal key={`br-${it.id}-${modal === 'bulkReceive'}`} opened={modal === 'bulkReceive'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} busy={busy}
-          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail }), (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
+        <BulkReceiveModal key={`br-${it.id}-${modal === 'bulkReceive'}`} opened={modal === 'bulkReceive'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} myBiz={myBiz} busy={busy}
+          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail, checks: f.checks }), (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
         <BulkSellModal key={`bs-${it.id}-${modal === 'bulkSell'}`} opened={modal === 'bulkSell'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} busy={busy}
           onSave={(f) => run(() => sellMany(f), (r) => notifyRecorded(`加工品 ${f.ids.length}ロットの販売開始を記録しました`, r))} />
-        <ReceiveModal key={`r-${it.id}-${modal === 'receive'}`} opened={modal === 'receive'} onClose={() => setModal(null)} item={it} busy={busy}
+        <ReceiveModal key={`r-${it.id}-${modal === 'receive'}`} opened={modal === 'receive'} onClose={() => setModal(null)} item={it} items={items} myBiz={myBiz} busy={busy}
           onSave={(f) => run(() => receiveItem({ itemId: it.id, ...f }), (r) => notifyRecorded('受け取りを記録しました。持ち主があなたに移りました', r))} />
         <SellModal key={`s-${it.id}-${modal === 'sell'}`} opened={modal === 'sell'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(f) => run(() => startSale({ itemId: it.id, ...f }), (r) => notifyRecorded('販売開始を記録しました', r))} />
@@ -891,9 +997,11 @@ function BulkHandoverModal({ opened, onClose, item, items, businesses, myId, myR
 
 // 加工品をまとめて受け取る：受け取るロットを選び、量った総重量を入れる
 // 各ロットの重さは、渡したときの重さに「量った総重量 ÷ 渡したときの総重量」を掛けて記録する（全体の増減が各ロットに出る）
-function BulkReceiveModal({ opened, onClose, item, items, myId, busy, onSave }) {
+function BulkReceiveModal({ opened, onClose, item, items, myId, myBiz, busy, onSave }) {
   const kids = item.children.map((id) => items[id]).filter((k) => k.custody.pending === myId)
   const [picked, setPicked] = useState(() => new Set(kids.map((k) => k.id)))
+  const checks = useChecks({ items, it: item, myBiz, also: kids, from: kids[0] ? { id: kids[0].custody.holder, name: kids[0].custody.holderName } : null, enabled: opened })
+  const [ack, setAck] = useState(false)
   const sel = kids.filter((k) => picked.has(k.id))
   const expected = sel.reduce((n, k) => n + k.custody.lastKg, 0)
   const [total, setTotal] = useState(Math.round(expected * 100) / 100)
@@ -930,14 +1038,15 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, busy, onSave }) 
           </Alert>
         )}
         <TextInput label="メモ（任意）" placeholder="例：冷凍庫Aに入庫" value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
+        <ReceiveChecks checks={checks} ack={ack} setAck={setAck} />
         <GeoStatus opened={opened} />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
-          <Button loading={busy} disabled={sel.length === 0 || !(Number(total) > 0)} leftSection={<IconPackageImport size={18} />}
+          <Button loading={busy} disabled={sel.length === 0 || !(Number(total) > 0) || !canReceive(checks, ack)} leftSection={<IconPackageImport size={18} />}
             onClick={() => {
               const ratio = Number(total) / expected
-              onSave({ rows: sel.map((k) => ({ id: k.id, kg: Math.round(k.custody.lastKg * ratio * 100) / 100 })), detail })
-            }}>{sel.length ? `${sel.length}ロットを受け取る` : '受け取るロットを選んでください'}</Button>
+              onSave({ rows: sel.map((k) => ({ id: k.id, kg: Math.round(k.custody.lastKg * ratio * 100) / 100 })), detail, checks: checksPayload(checks) })
+            }}>{checks.loading ? '照合中…' : sel.length ? `${sel.length}ロットを受け取る` : '受け取るロットを選んでください'}</Button>
         </Group>
       </Stack>
     </Sheet>
@@ -986,8 +1095,10 @@ function BulkSellModal({ opened, onClose, item, items, myId, busy, onSave }) {
 }
 
 // 受け取る：重さを量って入れる。場所も記録する
-function ReceiveModal({ opened, onClose, item, busy, onSave }) {
+function ReceiveModal({ opened, onClose, item, items, myBiz, busy, onSave }) {
   const [kg, setKg] = useState(item.custody.lastKg)
+  const checks = useChecks({ items, it: item, myBiz, from: { id: item.custody.holder, name: item.custody.holderName }, enabled: opened })
+  const [ack, setAck] = useState(false)
   const [detail, setDetail] = useState('')
   const d = Number(kg) > 0 && item.custody.lastKg ? weightDrift({ prevKg: item.custody.lastKg, kg: Number(kg) }) : null
   return (
@@ -1007,10 +1118,12 @@ function ReceiveModal({ opened, onClose, item, busy, onSave }) {
           </Alert>
         )}
         <TextInput label="メモ（任意）" placeholder="例：冷凍庫Aに入庫" value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
+        <ReceiveChecks checks={checks} ack={ack} setAck={setAck} />
         <GeoStatus opened={opened} />
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
-          <Button loading={busy} leftSection={<IconPackageImport size={18} />} onClick={() => onSave({ weightKg: Number(kg) || null, detail })}>受け取る</Button>
+          <Button loading={busy} disabled={!canReceive(checks, ack)} leftSection={<IconPackageImport size={18} />}
+            onClick={() => onSave({ weightKg: Number(kg) || null, detail, checks: checksPayload(checks) })}>{checks.loading ? '照合中…' : '受け取る'}</Button>
         </Group>
       </Stack>
     </Sheet>

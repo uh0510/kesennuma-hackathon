@@ -174,9 +174,9 @@ export function sellMany({ ids, displayName }) {
   return sendBatch(ids.map((id) => ({ itemId: id, type: 'sell', payload: { detail: `売場の表示：${displayName}`, display_name: displayName } })))
 }
 
-// 加工品をまとめて受け取る：rows = [{ id, kg }]
-export function receiveMany({ rows, detail }) {
-  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg } })))
+// 加工品をまとめて受け取る：rows = [{ id, kg }]。checks は受け取る前に確かめた結果（{ ok, notes }。指紋に含まれる）
+export function receiveMany({ rows, detail, checks }) {
+  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg, ...(checks ? { checks } : {}) } })))
 }
 
 // 引き渡す（せり結果・出荷）：渡す相手の事業者を指定する。相手が受け取ると持ち主が移る
@@ -186,10 +186,11 @@ export function handover({ itemId, kind, toId, detail, weightKg }) {
   return recordEvent({ itemId, type: kind, payload })
 }
 
-// 受け取る：指定された相手だけができる。重さと場所を記録する
-export function receiveItem({ itemId, weightKg, detail }) {
+// 受け取る：指定された相手だけができる。重さと場所、受け取る前に確かめた結果（checks）を記録する
+export function receiveItem({ itemId, weightKg, detail, checks }) {
   const payload = { detail: detail || '受け取り' }
   if (weightKg) payload.weight_kg = weightKg
+  if (checks) payload.checks = checks
   return recordEvent({ itemId, type: 'receive', payload })
 }
 

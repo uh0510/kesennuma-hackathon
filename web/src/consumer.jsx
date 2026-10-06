@@ -7,8 +7,8 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
-import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll } from './model.js'
-import { explorerTx, explorerAddress, fetchVesselActivity } from './api.js'
+import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll, useVesselActivity } from './model.js'
+import { explorerTx, explorerAddress } from './api.js'
 import { checkAis } from './lib/ais.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
 import { BRAND } from './brand.js'
@@ -399,16 +399,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const distance = Math.round(stops.slice(1).reduce((n, s, i) => n + km(stops[i].at, s.at), 0) / 10) * 10
 
   // 船の位置の記録（AIS）：undefined＝船にひも付いていない（何も出さない）/ null＝読み込み中 / { error }＝読めなかった
-  const [ais, setAis] = useState(undefined)
-  useEffect(() => {
-    if (!root.info.shipId) return
-    let alive = true
-    setAis(null)
-    fetchVesselActivity(root.info.shipId, root.info.landedAt ?? root.info.createdAt, root.info.catchFrom, root.info.catchTo)
-      .then((r) => alive && setAis(r.linked ? r : undefined))
-      .catch((e) => alive && setAis({ error: e.message }))
-    return () => { alive = false }
-  }, [root.id])
+  const ais = useVesselActivity(root)
 
   // 道のり：漁獲（船の情報）＋ 各記録を時間順に
   const chapters = useMemo(() => {
