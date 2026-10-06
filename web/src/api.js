@@ -126,14 +126,16 @@ export async function nextLandingId(prefix, knownIds) {
 // 水揚げを登録（IDを発行し、landing を記録）
 // lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
 // catchFrom / catchTo は漁獲期間（YYYY-MM-DD）。period は表示用の文字（前からの形）
-export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo }) {
+// scale：はかりの署名つきの値（lib/scale.js の readingBody。なければ手入力）
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, scale }) {
   const period = `${catchFrom}〜${catchTo}`
+  const sr = scale ? { scale_reading: scale } : {}
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
     newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landing_port: landingPort, landed_at: landedAt },
     payload: lot
-      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg }
-      : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg },
+      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg, ...sr }
+      : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg, ...sr },
   })
 }
 
@@ -161,11 +163,20 @@ export function makeProcessLot({ itemId, name, inputs, photo }) {
   return recordEvent({ mix: { itemId, name, inputs }, ...photoBody(photo) })
 }
 
+// はかり：登録（ログインした事業者のはかりとして）と、登録の一覧
+export const registerScale = ({ address, name, sig }) => recordEvent({ registerScale: { address, name, sig } })
+export async function fetchScale(address) {
+  const { data, error } = await supabase.from('scales').select('address, name, business_id').eq('address', address.toLowerCase()).maybeSingle()
+  if (error) throw error
+  return data
+}
+
 // まとめて記録する（同じ種類の加工・引き渡し・受け取りだけ）。100件ずつに分けて送る
-async function sendBatch(entries, photo) {
+// extra：1回目に一緒に送るもの（はかりの値など。はかりの値は合計の重さなので、100件を超えるときは送らない）
+async function sendBatch(entries, photo, extra = {}) {
   let last = null
   for (let i = 0; i < entries.length; i += 100) {
-    last = await recordEvent({ batch: entries.slice(i, i + 100), ...(i === 0 ? photoBody(photo) : {}) })
+    last = await recordEvent({ batch: entries.slice(i, i + 100), ...(i === 0 ? photoBody(photo) : {}), ...(i === 0 && entries.length <= 100 ? extra : {}) })
   }
   return last
 }
@@ -181,8 +192,8 @@ export function sellMany({ ids, displayName }) {
 }
 
 // 加工品をまとめて受け取る：rows = [{ id, kg }]。checks は受け取る前に確かめた結果（{ ok, notes }。指紋に含まれる）
-export function receiveMany({ rows, detail, checks }) {
-  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg, ...(checks ? { checks } : {}) } })))
+export function receiveMany({ rows, detail, checks, scale }) {
+  return sendBatch(rows.map((r) => ({ itemId: r.id, type: 'receive', payload: { detail: detail || '受け取り', weight_kg: r.kg, ...(checks ? { checks } : {}) } })), null, scale ? { scale_reading: scale } : {})
 }
 
 // 引き渡す（せり結果・出荷）：渡す相手の事業者を指定する。相手が受け取ると持ち主が移る
@@ -193,10 +204,11 @@ export function handover({ itemId, kind, toId, detail, weightKg }) {
 }
 
 // 受け取る：指定された相手だけができる。重さと場所、受け取る前に確かめた結果（checks）を記録する
-export function receiveItem({ itemId, weightKg, detail, checks }) {
+export function receiveItem({ itemId, weightKg, detail, checks, scale }) {
   const payload = { detail: detail || '受け取り' }
   if (weightKg) payload.weight_kg = weightKg
   if (checks) payload.checks = checks
+  if (scale) payload.scale_reading = scale
   return recordEvent({ itemId, type: 'receive', payload })
 }
 

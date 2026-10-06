@@ -39,6 +39,14 @@ create table ships (
   created_at  timestamptz not null default now()
 );
 
+-- はかり：自分の鍵で、量った重さと日時に署名する（address＝鍵のアドレス、小文字）。登録は record-event を通す
+create table scales (
+  address     text primary key,
+  name        text not null,
+  business_id uuid not null references businesses(id),
+  created_at  timestamptz not null default now()
+);
+
 -- 製品マスタ（保存方法・期限・歩留まりの範囲）
 create table products (
   id          uuid primary key default gen_random_uuid(),
@@ -169,6 +177,8 @@ alter table events     enable row level security;
 create policy businesses_read_all on businesses for select using (true);
 create policy ships_read_all      on ships      for select using (true);
 create policy products_read_all   on products   for select using (true);
+alter table scales enable row level security;
+create policy scales_read_all on scales for select using (true);
 
 -- items / events は、ログインした事業者が「自分が記録した・自分に引き渡された（引き渡し中を含む）魚と、その上流」だけ読める
 -- 上流は、親（parent_id）と、加工ロットに入れた魚（inputs）の両方をたどる
@@ -227,14 +237,14 @@ create policy members_read_own    on members    for select using (user_id = auth
 
 -- 念のため、公開キーからの書き込み権限そのものを外しておく（RLS の設定漏れがあっても書けない）
 grant usage on schema public to anon, authenticated;
-grant select on businesses, products to anon, authenticated;
+grant select on businesses, products, scales to anon, authenticated;
 -- 船マスタの AIS の番号・GFW の船のIDは公開しない（照合は vessel-activity がサーバーで行う）
 -- Supabase は最初から全部の列を読めるようにしているので、いったん外してから読んでよい列だけ渡す
 revoke select on ships from anon, authenticated;
 grant select (id, name, reg_no, permit_no, gear, owner_line_id, created_at, ais_sample) on ships to anon, authenticated;
 grant select on items, events, item_balance to authenticated;
 grant select on members to authenticated;
-revoke insert, update, delete, truncate on businesses, members, ships, products, items, events from anon, authenticated;
+revoke insert, update, delete, truncate on businesses, members, ships, products, items, events, scales from anon, authenticated;
 
 -- 重量チェック用ビューは、呼んだ人の権限で読む
 alter view item_balance set (security_invoker = true);

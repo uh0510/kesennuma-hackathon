@@ -23,6 +23,9 @@
 // 個体・加工品の発行（landing / born）では、そのときの値とマスタの値を payload.item に写し取り、指紋に含める。
 //   → あとでマスタを直しても、この記録の内容と指紋は変わらない。items の値が写しと食い違えば検証で分かる
 // 現場の人にウォレット操作をさせないため、事業者ごとの鍵をサーバーで預かって署名する（プロトタイプの割り切り）
+// はかりの署名つきの重さ：水揚げ・受け取りで payload.scale_reading（まとめて受け取るときは body.scale_reading）に
+//   { id, kg, at, a（はかりのアドレス）, s（署名） } を送ると、署名・登録・30分以内・使い回し・重さの一致を確かめて payload.scale に入れる
+//   はかりの登録：{ registerScale: { address, name, sig } }（sig は登録の文への、はかりの鍵の署名）
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ethers } from 'npm:ethers@6'
 
@@ -144,6 +147,51 @@ async function checkYield(supa: any, parentId: string, parentEvs: any[], newKg: 
   if (total > baseKg + 0.005) throw new Error(`加工品の重さの合計（${total.toFixed(2)}kg）が、元の重さ（${baseKg}kg）を超えます`)
 }
 
+// ==== はかり ====
+// 署名する文（web/src/lib/scale.js と同じ形）
+const scaleMessage = (id: string, kg: number, at: string) => `GYOSEKI-SCALE|${id}|${kg}|${at}`
+const scaleRegisterMessage = (address: string) => `GYOSEKI-SCALE-REGISTER|${address.toLowerCase()}`
+const SCALE_MAX_AGE = 30 * 60 * 1000
+
+// はかりの値を確かめ、記録に入れる形にして返す（送られていなければ null）。kg＝記録する重さ、tol＝許す差
+// deno-lint-ignore no-explicit-any
+async function verifyScale(supa: any, actor: string, r: any, kg: number, tol = 0.005) {
+  if (!r) return null
+  const { id, at, a, s } = r
+  const skg = Number(r.kg)
+  if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id) || !(skg > 0) || typeof at !== 'string' || typeof s !== 'string') throw new Error('はかりの値の形が正しくありません')
+  let addr = ''
+  try { addr = ethers.verifyMessage(scaleMessage(id, skg, at), s).toLowerCase() } catch { throw new Error('はかりの署名が正しくありません') }
+  if (addr !== String(a).toLowerCase()) throw new Error('はかりの署名が正しくありません')
+  const { data: sc } = await supa.from('scales').select('name, business_id').eq('address', addr).maybeSingle()
+  if (!sc) throw new Error('登録されていないはかりです')
+  if (sc.business_id !== actor) throw new Error('ほかの事業者のはかりの値は使えません')
+  const t = Date.parse(at)
+  if (!(Date.now() - t <= SCALE_MAX_AGE && t - Date.now() < 60 * 1000)) throw new Error('はかりで量ってから30分を過ぎています。量り直してください')
+  if (!(Math.abs(skg - kg) <= tol)) throw new Error(`はかりの重さ（${skg}kg）と、記録する重さ（${kg}kg）が違います`)
+  const { data: used } = await supa.from('events').select('id').eq('payload->scale->>id', id).limit(1)
+  if (used?.length) throw new Error('このはかりの値は、もう使われています。量り直してください')
+  return { id, name: sc.name, address: addr, kg: skg, at, sig: s }
+}
+
+// はかりを登録する（ログインした事業者のはかりとして。ほかの事業者が登録済みなら断る）
+// deno-lint-ignore no-explicit-any
+async function registerScale(supa: any, actor: string, r: any) {
+  const address = String(r?.address ?? '').toLowerCase()
+  const name = String(r?.name ?? '').trim().slice(0, 40)
+  if (!/^0x[0-9a-f]{40}$/.test(address) || !name) throw new Error('はかりのアドレスと名前を入れてください')
+  let signer = ''
+  try { signer = ethers.verifyMessage(scaleRegisterMessage(address), String(r.sig)).toLowerCase() } catch { /* 下で断る */ }
+  if (signer !== address) throw new Error('はかりの鍵の署名が正しくありません')
+  const { data: cur } = await supa.from('scales').select('business_id').eq('address', address).maybeSingle()
+  if (cur && cur.business_id !== actor) throw new Error('このはかりは、ほかの事業者が登録しています')
+  const { error } = cur
+    ? await supa.from('scales').update({ name }).eq('address', address)
+    : await supa.from('scales').insert({ address, name, business_id: actor })
+  if (error) throw error
+  return { ok: true, address, name }
+}
+
 // deno-lint-ignore no-explicit-any
 const bizName = async (supa: any, id: string | null) => (id ? (await supa.from('businesses').select('name').eq('id', id).maybeSingle()).data?.name ?? id : '不明')
 
@@ -204,7 +252,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
 // ==== まとめて記録する（加工・引き渡し・受け取り） ====
 const BATCH_TYPES = ['born', 'ship', 'auction', 'receive', 'sell']
 const BATCH_MAX = 200
-const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId', 'into', 'inputs']
+const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId', 'into', 'inputs', 'scale', 'scale_reading']
 const clean = (p: Record<string, unknown> = {}) => Object.fromEntries(Object.entries(p).filter(([k]) => !STRIP.includes(k)))
 
 // deno-lint-ignore no-explicit-any
@@ -275,6 +323,14 @@ async function handleBatch(supa: any, actor: string, body: any) {
     }
   }
 
+  // はかりの署名つきの合計の重さ（まとめて受け取るときだけ。各ロットの重さは合計を割り振ったもの）
+  let scale = null
+  if (body.scale_reading) {
+    if (type !== 'receive') throw new Error('はかりの値を使えるのは、水揚げと受け取りだけです')
+    const sum = list.reduce((n, b) => n + Number(b.payload?.weight_kg ?? 0), 0)
+    scale = await verifyScale(supa, actor, body.scale_reading, Math.round(sum * 100) / 100, Math.max(0.005, 0.006 * list.length))
+  }
+
   // 写真（加工品に添えるときは1枚を全員で共有）と場所（受け取りのとき）
   const photo = body.photo ? await savePhoto(supa, ids[0], body.photo) : null
   const where = await locate(supa, actor, body.location ?? null)
@@ -298,6 +354,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
     let p: Record<string, unknown> = { ...clean(b.payload), ...(extras[b.itemId] ?? {}) }
     if (photo) p = { ...p, photo }
     if (where) p = { ...p, location: where }
+    if (scale) p = { ...p, scale: { ...scale, total: true } }
     if (snaps[b.itemId]) p = { ...p, item: snaps[b.itemId] }
     const prevHash = byItem[b.itemId]?.at(-1)?.hash ?? null
     const createdAt = new Date(t0 + i).toISOString()
@@ -449,6 +506,8 @@ Deno.serve(async (req) => {
     if (Array.isArray(reqBody.batch)) return json(await handleBatch(supa, actor, reqBody))
     // 加工ロットを作るとき
     if (reqBody.mix) return json(await handleMix(supa, actor, reqBody))
+    // はかりを登録するとき
+    if (reqBody.registerScale) return json(await registerScale(supa, actor, reqBody.registerScale))
 
     // 水揚げ（個体IDの発行）は市場だけ
     if (type === 'landing') {
@@ -496,11 +555,16 @@ Deno.serve(async (req) => {
     if (type === 'activate') throw new Error('QRは販売開始を記録すると自動で有効になります')
 
     // 写し（item）・写真の指紋（photo）・場所（location）はサーバーが作ったものだけ。画面から payload で送られてきたものは捨てる
-    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, into: _into, inputs: _inputs, ...rest } = payload
+    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, into: _into, inputs: _inputs, scale: _scale, scale_reading: scaleReading, ...rest } = payload
     let body: Record<string, unknown> = { ...rest, ...extra }
 
     // 発行する項目を先に確かめ、写真を保存してから items を作る（途中で失敗しても items だけが残らないように）
     const row = newItem ? pickNewItem(newItem, type, parentId) : null
+    // はかりの署名つきの重さ（水揚げ・受け取りだけ）
+    if (scaleReading) {
+      if (type !== 'landing' && type !== 'receive') throw new Error('はかりの値を使えるのは、水揚げと受け取りだけです')
+      body = { ...body, scale: await verifyScale(supa, actor, scaleReading, Number(type === 'landing' ? row?.weight_kg : payload.weight_kg)) }
+    }
     if (row?.kind === 'product') {
       // 加工品の魚種は親から引き継ぐ（画面から送られた魚種は使わない）
       const { data: parent } = await supa.from('items').select('species').eq('id', parentId).maybeSingle()
