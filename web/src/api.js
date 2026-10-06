@@ -79,8 +79,9 @@ async function issuerOnChain(id) {
 
 // 漁船が実際に漁をした場所と入港した港（Global Fishing Watch の公開データ。vessel-activity が船マスタから船を引いて問い合わせる）
 // 船に AIS の番号がひも付いていなければ { linked: false }
-export async function fetchVesselActivity(shipId, landedAt) {
-  const { data, error } = await supabase.functions.invoke('vessel-activity', { body: { shipId, landedAt } })
+// catchFrom / catchTo（申告した漁獲期間）があれば、漁の地点はその期間だけになる
+export async function fetchVesselActivity(shipId, landedAt, catchFrom, catchTo) {
+  const { data, error } = await supabase.functions.invoke('vessel-activity', { body: { shipId, landedAt, catchFrom, catchTo } })
   if (error) {
     const msg = await error.context?.json?.().then((j) => j.error).catch(() => null)
     throw new Error(msg ?? error.message)
@@ -124,13 +125,15 @@ export async function nextLandingId(prefix, knownIds) {
 
 // 水揚げを登録（IDを発行し、landing を記録）
 // lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
-export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, period, landedAt, photo }) {
+// catchFrom / catchTo は漁獲期間（YYYY-MM-DD）。period は表示用の文字（前からの形）
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo }) {
+  const period = `${catchFrom}〜${catchTo}`
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
     newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landing_port: landingPort, landed_at: landedAt },
     payload: lot
-      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, weight_kg: weightKg }
-      : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, weight_kg: weightKg },
+      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg }
+      : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg },
   })
 }
 

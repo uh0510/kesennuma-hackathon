@@ -259,8 +259,8 @@ function AisCheck({ root, ais, t, lang }) {
         {ais?.sample && <div className="ais-sample">{t.aisSample}</div>}
         {res && <>
           <Row level={res.area} title={t.aisArea}
-            main={{ ok: t.aisAreaOk, partial: t.aisAreaPartial, ng: t.aisAreaNg, none: t.aisAreaNone }[res.area]}
-            sub={<>{t.aisDeclared(tr(root.info.catchArea) ?? '—')}<br />{res.total ? t.aisSeen(res.top.slice(0, 3).map(([f, n]) => `FAO ${f}：${n}`).join(' / '), res.total) : ''}</>} />
+            main={{ ok: t.aisAreaOk, partial: t.aisAreaPartial, ng: t.aisAreaNg, none: ais.declared ? t.aisAreaNoneInPeriod : t.aisAreaNone }[res.area]}
+            sub={<>{t.aisDeclared(tr(root.info.catchArea) ?? '—', ais.declared ? `${root.info.catchFrom}〜${root.info.catchTo}` : null)}<br />{res.total ? t.aisSeen(res.top.slice(0, 3).map(([f, n]) => `FAO ${f}：${n}`).join(' / '), res.total) : ''}</>} />
           {res.port && <Row level={res.port} title={t.aisPort}
             main={res.port === 'ok' ? t.aisPortOk(tr(root.info.port), ymd(res.visit.start)) : t.aisPortNg(tr(root.info.port))} />}
           {res.route.length > 0 && <div className="ais-route"><span>{t.aisRoute}</span>{res.route.join(' → ')}</div>}
@@ -404,7 +404,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
     if (!root.info.shipId) return
     let alive = true
     setAis(null)
-    fetchVesselActivity(root.info.shipId, root.info.landedAt ?? root.info.createdAt)
+    fetchVesselActivity(root.info.shipId, root.info.landedAt ?? root.info.createdAt, root.info.catchFrom, root.info.catchTo)
       .then((r) => alive && setAis(r.linked ? r : undefined))
       .catch((e) => alive && setAis({ error: e.message }))
     return () => { alive = false }

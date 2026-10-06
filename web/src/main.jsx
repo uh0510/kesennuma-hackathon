@@ -1139,7 +1139,9 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   const [species, setSpecies] = useState(SPECIES[0].name)
   const [area, setArea] = useState(AREAS[0])
   const [port, setPort] = useState(PORTS[0])
-  const [period, setPeriod] = useState('')
+  // 漁獲期間（申告）：船の位置の記録（AIS）と照らし合わせるので日付で入れる。最初は水揚げ日の 30 日前〜前日
+  const [catchFrom, setCatchFrom] = useState(ymd(new Date(Date.now() - 30 * 86400000)))
+  const [catchTo, setCatchTo] = useState(ymd(new Date(Date.now() - 86400000)))
   const [kg, setKg] = useState(SPECIES[0].kg)
   const [count, setCount] = useState(1)
   const [grade, setGrade] = useState(GRADES[1])
@@ -1150,6 +1152,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   // 水揚げ日（登録が水揚げの翌日以降になることもあるので選べる。時刻は朝 6 時として記録）
   const [day, setDay] = useState(ymd(new Date()))
   const landedAt = new Date(`${day}T06:00:00+09:00`).toISOString()
+  const periodOk = catchFrom <= catchTo && catchTo <= day
   // ID：KSN-魚種コード-水揚げ日(YYMMDD)-連番（1尾ずつも水揚げロットも同じ形）
   const prefix = `KSN-${sp.code}-${day.replaceAll('-', '').slice(2)}-`
   // 連番は空いているものを探す（チェーンにすでにあるIDも飛ばす）。チェーンに聞けないときは DB だけで決める
@@ -1225,8 +1228,16 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         )}
         {sp.lot && <BigNumber label="尾数（おおよそ）" value={count} onChange={setCount} unit="尾" steps={[1, 10]} min={1} decimals={0} />}
         <BigNumber label={sp.lot ? '重量（合計）' : '重量'} value={kg} onChange={setKg} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
-        <TextInput label="漁獲期間" placeholder="例：9/20〜10/1" value={period} onChange={(e) => setPeriod(e.currentTarget.value)}
-          styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
+        <div>
+          <Text className="field-label">漁獲期間</Text>
+          <SimpleGrid cols={2} spacing="xs">
+            <TextInput type="date" label="始まり" value={catchFrom} max={day} onChange={(e) => e.currentTarget.value && setCatchFrom(e.currentTarget.value)} />
+            <TextInput type="date" label="終わり" value={catchTo} max={day} onChange={(e) => e.currentTarget.value && setCatchTo(e.currentTarget.value)} />
+          </SimpleGrid>
+          <Text size="xs" c={periodOk ? 'dimmed' : 'red'} mt={6}>
+            {periodOk ? 'この期間に、申告した海域で漁をしていたかを、船の位置の記録と照らし合わせます' : '漁獲期間は「始まり ≦ 終わり ≦ 水揚げ日」にしてください'}
+          </Text>
+        </div>
         <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真"
           hint={sp.lot ? '消費者の画面に「水揚げ時の様子」として大きく出ます。加工品にも引き継がれます' : '消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます'} />
         {itemId
@@ -1234,8 +1245,8 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
           : <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">番号を確かめています…</Text></Group>}
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
-          <Button loading={busy} disabled={!ship || !itemId || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, period, landedAt, photo })}>
+          <Button loading={busy} disabled={!ship || !itemId || !periodOk || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
+            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo })}>
             {sp.lot ? '水揚げロットのIDを発行' : '個体IDを発行'}
           </Button>
         </Group>

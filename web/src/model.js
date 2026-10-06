@@ -45,6 +45,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
       photos: evs.filter((e) => e.payload?.photo?.path).map((e) => ({ id: e.id, url: photoUrl(e.payload.photo.path), type: e.type, at: e.created_at })),
       info: {
         createdAt: r.created_at, landedAt: r.landed_at, port: r.landing_port, catchArea: r.catch_area, period: landing?.payload?.period || null,
+        catchFrom: landing?.payload?.catch_from ?? null, catchTo: landing?.payload?.catch_to ?? null,
         shipId: r.ship_id ?? null, shipName: (snap?.ship ?? ship[r.ship_id])?.name ?? null, gear: (snap?.ship ?? ship[r.ship_id])?.gear ?? null, maker: biz[r.created_by]?.name ?? null,
         storage: (snap?.product ?? prod[r.product_id])?.storage ?? null, shelfDays: (snap?.product ?? prod[r.product_id])?.shelf_days ?? null,
       },

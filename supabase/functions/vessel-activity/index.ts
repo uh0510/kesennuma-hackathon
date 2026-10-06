@@ -1,8 +1,10 @@
 // Supabase Edge Function：漁船が実際に漁をした場所と、入港した港を返す（Global Fishing Watch の公開データ）
-// 呼び出し：POST /functions/v1/vessel-activity  { shipId, landedAt }   ※ログイン不要（消費者の画面から呼ぶ）
-//   shipId   ：ships.id。GFW の船のIDは DB の船マスタから引く（画面から任意の船を問い合わせる中継にはしない）
-//   landedAt ：水揚げの日時。その前 150 日〜後 3 日を調べる
-// 返す値：{ ok, linked, sample, from, to, fishing: [{ start, end, lat, lon, fao, eez, highSeas }], ports: [{ start, end, name, flag, lat, lon }] }
+// 呼び出し：POST /functions/v1/vessel-activity  { shipId, landedAt, catchFrom?, catchTo? }   ※ログイン不要（消費者の画面から呼ぶ）
+//   shipId    ：ships.id。GFW の船のIDは DB の船マスタから引く（画面から任意の船を問い合わせる中継にはしない）
+//   landedAt  ：水揚げの日時。入港の確認と、寄った港の一覧に使う
+//   catchFrom / catchTo：申告した漁獲期間（YYYY-MM-DD）。漁の地点はこの期間だけを返す（申告した期間に、申告した海域で漁をしていたか）
+//                        ない・おかしいときは、水揚げの 150 日前〜3 日後を見る（漁獲期間を日付で入れる前の記録）
+// 返す値：{ ok, linked, sample, from, to, declared, fishing: [{ start, end, lat, lon, fao, eez, highSeas }], ports: [{ start, end, name, flag, lat, lon }] }
 //   sample＝true：表示例（ships.ais_sample）。画面に「見本」と出す
 //   gfw_vessel_id が 'sample:' で始まる船は、実在の船に結び付かない作りものの見本データを返す（申告違いの例を見せるため）
 //   fishing の fao は FAO の大海区（例 "61"）。漁をしたと見られる時間と場所で、船の細かい航跡ではない
@@ -28,12 +30,13 @@ async function gfwEvents(dataset: string, vessel: string, from: string, to: stri
   return ((await r.json()).entries ?? []) as any[]
 }
 
-// 作りものの見本：水揚げの 120〜30 日前に南西太平洋（FAO 81）で漁をし、ヌメア経由で気仙沼に戻った、という航海
-// 実在の船のデータではない（申告と違う海域の例を見せるためだけに使う）
-function syntheticVoyage(landed: Date) {
+// 作りものの見本：南西太平洋（FAO 81）で漁をし、ヌメア経由で気仙沼に戻った、という航海。漁は申告した期間の中
+// （期間がなければ水揚げの 120〜30 日前）。実在の船のデータではない（申告と違う海域の例を見せるためだけに使う）
+function syntheticVoyage(landed: Date, period: [number, number] | null) {
   const t = landed.getTime()
+  const [p0, p1] = period ?? [t - 120 * DAY, t - 30 * DAY]
   const fishing = Array.from({ length: 48 }, (_, i) => {
-    const day = t - (120 - i * 1.9) * DAY
+    const day = p0 + ((p1 - p0) * i) / 47
     const lat = -28 - 6 * Math.sin(i * 0.7) - (i % 5)
     const lon = 172 + 9 * Math.cos(i * 0.45) + (i % 3) * 1.5
     return { start: new Date(day).toISOString(), end: new Date(day + 0.2 * DAY).toISOString(), lat, lon: lon > 180 ? lon - 360 : lon, fao: '81', eez: [], highSeas: true }
@@ -49,27 +52,34 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
     if (!Deno.env.get('GFW_TOKEN')) return json({ ok: false, error: 'GFW_TOKEN が設定されていません' }, 500)
-    const { shipId, landedAt } = await req.json()
+    const { shipId, landedAt, catchFrom, catchTo } = await req.json()
     const landed = new Date(landedAt)
     if (!shipId || Number.isNaN(landed.getTime())) return json({ ok: false, error: '船と水揚げの日時を指定してください' }, 400)
-    const from = new Date(landed.getTime() - 150 * DAY).toISOString().slice(0, 10)
-    const to = new Date(Math.min(landed.getTime() + 3 * DAY, Date.now())).toISOString().slice(0, 10)
+    const ymd = (t: number) => new Date(t).toISOString().slice(0, 10)
+    const until = Math.min(landed.getTime() + 3 * DAY, Date.now())
+    // 申告した漁獲期間（開始 ≦ 終了 ≦ 水揚げの3日後、長さ 400 日まで）。だめなら水揚げの 150 日前から
+    const cf = Date.parse(`${catchFrom}T00:00:00Z`), ct = Date.parse(`${catchTo}T00:00:00Z`)
+    const declared = /^\d{4}-\d{2}-\d{2}$/.test(String(catchFrom)) && /^\d{4}-\d{2}-\d{2}$/.test(String(catchTo)) && cf <= ct && ct <= until && ct - cf <= 400 * DAY
+    const from = declared ? ymd(cf) : ymd(landed.getTime() - 150 * DAY)
+    const fishTo = declared ? ymd(ct + DAY) : ymd(until) // 終了日の分まで含める
+    const to = ymd(until)
 
-    const key = `${shipId}:${from}:${to}`
+    const key = `${shipId}:${from}:${fishTo}:${to}`
     const hit = cache.get(key)
     if (hit && Date.now() - hit.at < 3600000) return json(hit.body)
 
     const supa = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: ship } = await supa.from('ships').select('gfw_vessel_id, ais_sample').eq('id', shipId).maybeSingle()
     if (!ship?.gfw_vessel_id) return json({ ok: true, linked: false })
-    if (ship.gfw_vessel_id.startsWith('sample:')) return json({ ok: true, linked: true, sample: true, from, to, ...syntheticVoyage(landed) })
+    if (ship.gfw_vessel_id.startsWith('sample:')) return json({ ok: true, linked: true, sample: true, from, to, declared, ...syntheticVoyage(landed, declared ? [cf, ct] : null) })
 
+    // 港は、漁獲期間の始まり（なければ 150 日前）から水揚げの3日後まで（寄った港の一覧と入港の確認）
     const [fishing, ports] = await Promise.all([
-      gfwEvents('public-global-fishing-events:latest', ship.gfw_vessel_id, from, to),
+      gfwEvents('public-global-fishing-events:latest', ship.gfw_vessel_id, from, fishTo),
       gfwEvents('public-global-port-visits-events:latest', ship.gfw_vessel_id, from, to),
     ])
     const body = {
-      ok: true, linked: true, sample: Boolean(ship.ais_sample), from, to,
+      ok: true, linked: true, sample: Boolean(ship.ais_sample), from, to, declared,
       fishing: fishing.map((e) => ({
         start: e.start, end: e.end, lat: e.position?.lat, lon: e.position?.lon,
         fao: e.regions?.majorFao?.[0] ?? null, eez: e.regions?.eez ?? [], highSeas: (e.regions?.highSeas ?? []).length > 0,
