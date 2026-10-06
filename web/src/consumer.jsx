@@ -132,6 +132,8 @@ function JourneyMap({ stops, t, ais }) {
     try {
       map = new maplibregl.Map({
         container: box.current, style: MAP_STYLE, interactive: false, attributionControl: { compact: true },
+        // 大西洋 → 日本のように範囲が広いと縮小しすぎて世界地図が横に何枚も並ぶので、世界1枚が横幅いっぱいになるところまでにする
+        minZoom: Math.max(0, Math.log2(box.current.clientWidth / 512)),
         bounds: new maplibregl.LngLatBounds(stops[0].at, stops[0].at).extend(stops.at(-1).at), fitBoundsOptions: { padding: 90 },
       })
     } catch (e) {
