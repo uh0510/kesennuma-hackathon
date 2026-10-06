@@ -10,11 +10,10 @@ revoke select on ships from anon, authenticated;
 grant select (id, name, reg_no, permit_no, gear, owner_line_id, created_at, ais_sample) on ships to anon, authenticated;
 
 -- 3. デモの船（サンプル。名前は架空）
---    第八 海鳴丸：実在の日本のはえ縄船の公開データ（2026年3月に大西洋 FAO 34 で操業し、ラス・パルマス・パナマ経由で 3/29 に気仙沼へ入港）を表示例として使う
---                 → 登録は「中東部大西洋（FAO 34）・気仙沼港・水揚げ日 2026-03-29」にすると、照らし合わせがそろう
 --    第五 浜風丸：作りものの見本データ（南西太平洋 FAO 81 で操業）。実在の船には結び付かない
 --                 → 登録で「北西太平洋（FAO 61）」と申告すると「申告と違う海域」の例になる
-update ships set gfw_vessel_id = 'e6e26391d-d2e2-1679-3f5f-a27afb14f0d7', ais_sample = true where name = '第八 海鳴丸';
+--    実在の船の公開データを表示例として使う船のひも付けは、リポジトリが公開なのでここには書かない
+--    （どの実在の船か分からないようにするため。手元の docs/ にある SQL で行う）
 update ships set gfw_vessel_id = 'sample:south-pacific', ais_sample = true where name = '第五 浜風丸';
 
 -- 確認：2隻にIDが入っている（このSQL Editor は管理者なので見える）
