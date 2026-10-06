@@ -155,6 +155,12 @@ export async function processItem({ parent, childIds, productId, name, lots, pho
   return sendBatch(entries, photo)
 }
 
+// 加工ロットを作る：自分が持っている、まだ加工していない魚（inputs＝ID の一覧）をまとめて1つの加工ロットにする
+// 入れた魚と重さの一覧はサーバーが記録に入れ、指紋に含める
+export function makeProcessLot({ itemId, name, inputs, photo }) {
+  return recordEvent({ mix: { itemId, name, inputs }, ...photoBody(photo) })
+}
+
 // まとめて記録する（同じ種類の加工・引き渡し・受け取りだけ）。100件ずつに分けて送る
 async function sendBatch(entries, photo) {
   let last = null

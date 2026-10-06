@@ -52,9 +52,10 @@ create table products (
 
 -- 個体・水揚げロット・加工品
 -- individual＝1尾ずつ管理する魚（マグロ系）、catch_lot＝船 × 水揚げ日 × 魚種 × 銘柄のまとまり（カツオ・メバチなど。quantity は尾数）
+-- process_lot＝加工ロット：加工場が受け取った魚を何尾かまとめて1回の加工に入れる単位（inputs＝入れた魚のID。quantity は入れた数）
 create table items (
   id          text primary key,         -- KSN-PBF-261006-001 / -P01 / -P01-K01
-  kind        text not null constraint items_kind_check check (kind in ('individual','catch_lot','product')),
+  kind        text not null constraint items_kind_check check (kind in ('individual','catch_lot','process_lot','product')),
   parent_id   text references items(id),
   species     text not null,
   name        text not null,
@@ -67,10 +68,13 @@ create table items (
   qr_status   text not null default 'issued' check (qr_status in ('issued','active')),
   quantity    int not null default 1 check (quantity > 0),          -- 加工品はロットのパック数、水揚げロットは尾数（おおよそ）、個体は 1
   unit_kg     numeric(10,3) check (unit_kg is null or unit_kg > 0), -- 1パックの重さ（weight_kg はロットの総重量）
+  inputs      text[],                           -- 加工ロットのみ：入れた魚のID
   created_by  uuid not null references businesses(id),
   created_at  timestamptz not null default now(),
   constraint items_kind_parent_check
-    check ((kind in ('individual','catch_lot') and parent_id is null) or (kind = 'product' and parent_id is not null))
+    check ((kind in ('individual','catch_lot') and parent_id is null and inputs is null)
+        or (kind = 'process_lot' and parent_id is null and cardinality(inputs) >= 1)
+        or (kind = 'product' and parent_id is not null and inputs is null))
 );
 create index on items(parent_id);
 
@@ -114,10 +118,10 @@ begin
     raise exception 'items は削除できません（訂正は fix として追記してください）';
   end if;
   if (new.id, new.kind, new.parent_id, new.species, new.name, new.weight_kg, new.ship_id, new.product_id,
-      new.catch_area, new.landed_at, new.landing_port, new.created_by, new.created_at, new.quantity, new.unit_kg)
+      new.catch_area, new.landed_at, new.landing_port, new.created_by, new.created_at, new.quantity, new.unit_kg, new.inputs)
      is distinct from
      (old.id, old.kind, old.parent_id, old.species, old.name, old.weight_kg, old.ship_id, old.product_id,
-      old.catch_area, old.landed_at, old.landing_port, old.created_by, old.created_at, old.quantity, old.unit_kg) then
+      old.catch_area, old.landed_at, old.landing_port, old.created_by, old.created_at, old.quantity, old.unit_kg, old.inputs) then
     raise exception 'items の内容は書き換えできません（QRの有効化のみ可）';
   end if;
   if old.qr_status = 'active' and new.qr_status is distinct from 'active' then
@@ -167,6 +171,7 @@ create policy ships_read_all      on ships      for select using (true);
 create policy products_read_all   on products   for select using (true);
 
 -- items / events は、ログインした事業者が「自分が記録した・自分に引き渡された（引き渡し中を含む）魚と、その上流」だけ読める
+-- 上流は、親（parent_id）と、加工ロットに入れた魚（inputs）の両方をたどる
 create or replace function visible_item_ids() returns setof text
 language sql stable security definer set search_path = public as $$
   with recursive me as (
@@ -177,7 +182,8 @@ language sql stable security definer set search_path = public as $$
   ), up as (
     select id from direct
     union
-    select i.parent_id from items i join up on i.id = up.id where i.parent_id is not null
+    select x.id from items i join up on i.id = up.id
+    cross join lateral unnest(array_remove(array[i.parent_id], null) || coalesce(i.inputs, '{}'::text[])) as x(id)
   )
   select id from up
 $$;
@@ -200,9 +206,10 @@ begin
   if st <> 'active' then return json_build_object('status', 'inactive'); end if;
   return (
     with recursive up as (
-      select id, parent_id from items where id = p_item
+      select id from items where id = p_item
       union
-      select i.id, i.parent_id from items i join up on i.id = up.parent_id
+      select x.id from items i join up on i.id = up.id
+      cross join lateral unnest(array_remove(array[i.parent_id], null) || coalesce(i.inputs, '{}'::text[])) as x(id)
     )
     select json_build_object(
       'status', 'ok',

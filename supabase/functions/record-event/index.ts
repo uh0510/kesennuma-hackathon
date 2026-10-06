@@ -8,6 +8,10 @@
 //   location = { lat, lng, accuracy }（記録した場所）。その時点の事業者の登録住所の座標と距離を添えて payload.location に入れる
 // 水揚げ（landing）は、1尾ずつ（individual：マグロ系）か、まとまり（catch_lot：船 × 水揚げ日 × 魚種 × 銘柄。quantity は尾数）
 // 加工品（born）の魚種は、画面から送られた値ではなく親の魚種を使う（途中で魚種を書き換えられないように）
+// 加工ロット：{ mix: { itemId, name, inputs: [魚のID, ...], detail? }, photo?, location? }
+//   自分が持っている・まだ加工していない魚を何尾かまとめて1つの加工ロット（process_lot）にする。
+//   加工ロットに born（入れた魚と重さの一覧 payload.inputs を指紋に含める）、入れた魚それぞれに process（payload.into）を記録する。
+//   入れた魚は、そのあと加工・引き渡し・販売できない（加工ロットから加工品を発行する）
 // 受け渡しの鎖：せり・出荷で payload.toId に渡す相手を指定 → 相手が receive すると持ち主が移る。
 //   加工・せり・出荷・保管・QR有効化・販売開始は今の持ち主だけ。受け取りは指定された相手だけ。それ以外は拒否する
 // 秘密情報（Supabase の secrets に登録）：
@@ -114,17 +118,30 @@ async function custody(supa: any, itemId: string) {
 }
 // deno-lint-ignore no-explicit-any
 function custodyOf(evs: any[]) {
-  let holder: string | null = null, pending: string | null = null, lastKg: number | null = null
+  let holder: string | null = null, pending: string | null = null, lastKg: number | null = null, into: string | null = null
   const actors = new Set<string>()
   for (const e of evs) {
     actors.add(e.actor)
+    if (e.type === 'process' && e.payload?.into) into = e.payload.into
     const kg = Number(e.payload?.weight_kg)
     if (Number.isFinite(kg) && kg > 0) lastKg = kg
     if (e.type === 'landing' || e.type === 'born') { holder = e.actor; pending = null }
     else if ((e.type === 'auction' || e.type === 'ship') && e.payload?.to?.id) pending = e.payload.to.id
     else if (e.type === 'receive') { holder = e.actor; pending = null }
   }
-  return { holder, pending, lastKg, actors }
+  return { holder, pending, lastKg, actors, into }
+}
+
+// 加工品の重さの合計は、元（親）の重さを超えられない（量は増やせない）
+// 元の重さ：最後に分かっている重さ（受け取ったときに量った重さ）。なければ発行したときの重さ
+// deno-lint-ignore no-explicit-any
+async function checkYield(supa: any, parentId: string, parentEvs: any[], newKg: number) {
+  const { data: parent } = await supa.from('items').select('weight_kg').eq('id', parentId).maybeSingle()
+  if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
+  const baseKg = custodyOf(parentEvs).lastKg ?? Number(parent.weight_kg)
+  const { data: kids } = await supa.from('items').select('weight_kg').eq('parent_id', parentId)
+  const total = (kids ?? []).reduce((n: number, k: { weight_kg: number }) => n + Number(k.weight_kg), 0) + newKg
+  if (total > baseKg + 0.005) throw new Error(`加工品の重さの合計（${total.toFixed(2)}kg）が、元の重さ（${baseKg}kg）を超えます`)
 }
 
 // deno-lint-ignore no-explicit-any
@@ -187,7 +204,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
 // ==== まとめて記録する（加工・引き渡し・受け取り） ====
 const BATCH_TYPES = ['born', 'ship', 'auction', 'receive', 'sell']
 const BATCH_MAX = 200
-const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId']
+const STRIP = ['item', 'photo', 'location', 'to', 'from', 'weight_check', 'toId', 'into', 'inputs']
 const clean = (p: Record<string, unknown> = {}) => Object.fromEntries(Object.entries(p).filter(([k]) => !STRIP.includes(k)))
 
 // deno-lint-ignore no-explicit-any
@@ -218,6 +235,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
     const c = custodyOf(byItem[parentId!] ?? [])
     if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。加工できるのは持ち主だけです`)
     if (c.pending) throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで加工できません`)
+    if (c.into) throw new Error(`この魚は加工ロット ${c.into} に入れました。加工品は加工ロットから発行してください`)
     const { data: parent } = await supa.from('items').select('species').eq('id', parentId).maybeSingle()
     if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
     parentSpecies = parent.species
@@ -241,6 +259,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
     for (const b of list) {
       const c = custodyOf(byItem[b.itemId] ?? [])
       if (!byItem[b.itemId]) throw new Error(`${b.itemId} が見つかりません`)
+      if (c.into) throw new Error(`${b.itemId} は加工ロット ${c.into} に入れました`)
       if (type === 'receive') {
         if (c.pending !== actor) throw new Error(`${b.itemId} の受け取り先はあなたではありません`)
         holderNames[c.holder!] ??= await bizName(supa, c.holder)
@@ -265,6 +284,7 @@ async function handleBatch(supa: any, actor: string, body: any) {
   let snaps: Record<string, any> = {}
   if (type === 'born') {
     const rows = list.map((b) => ({ ...pickNewItem(b.newItem ?? {}, 'born', parentId), species: parentSpecies }))
+    await checkYield(supa, parentId!, byItem[parentId!] ?? [], rows.reduce((n, r) => n + Number(r.weight_kg), 0))
     const { error } = await supa.from('items').insert(rows.map((r, i) => ({ ...r, id: ids[i], parent_id: parentId, created_by: actor })))
     if (error) throw error
     const product = rows[0].product_id ? (await supa.from('products').select('name, storage, shelf_days').eq('id', rows[0].product_id).single()).data : null
@@ -324,6 +344,92 @@ async function handleBatch(supa: any, actor: string, body: any) {
   }
 }
 
+// ==== 加工ロット（何尾かをまとめて1回の加工に入れる） ====
+const MIX_MAX = 100
+// deno-lint-ignore no-explicit-any
+async function handleMix(supa: any, actor: string, body: any) {
+  const { itemId, name, inputs, detail } = body.mix ?? {}
+  if (typeof itemId !== 'string' || !/^KSN-[A-Z]+-\d{6}-M\d{3}$/.test(itemId)) throw new Error('加工ロットのIDが正しくありません')
+  if (!Array.isArray(inputs) || inputs.length < 1) throw new Error('入れる魚を選んでください')
+  if (inputs.length > MIX_MAX) throw new Error(`一度に入れられるのは ${MIX_MAX} 件までです`)
+  if (new Set(inputs).size !== inputs.length) throw new Error('同じ魚が2回選ばれています')
+  const { data: exists } = await supa.from('items').select('id').eq('id', itemId).maybeSingle()
+  if (exists) throw new Error(`ID ${itemId} はすでに使われています`)
+
+  // 入れる魚：水揚げの単位（1尾・水揚げロット）で、自分が持っていて、まだ加工していないもの。魚種はそろえる
+  const { data: rows, error: e1 } = await supa.from('items').select('id, kind, species, weight_kg').in('id', inputs)
+  if (e1) throw e1
+  const byId = Object.fromEntries((rows ?? []).map((r: { id: string }) => [r.id, r]))
+  const { data: evs, error: e2 } = await supa.from('events').select('id, item_id, type, actor, payload, hash').in('item_id', inputs).order('id')
+  if (e2) throw e2
+  // deno-lint-ignore no-explicit-any
+  const evOf: Record<string, any[]> = {}
+  for (const e of evs ?? []) (evOf[e.item_id] ??= []).push(e)
+  const { data: kids } = await supa.from('items').select('parent_id').in('parent_id', inputs).limit(1)
+  if (kids?.length) throw new Error(`${kids[0].parent_id} はもう加工品を発行しています`)
+  const used: Array<{ id: string; kg: number }> = []
+  for (const id of inputs) {
+    const r = byId[id]
+    if (!r) throw new Error(`${id} が見つかりません`)
+    if (r.kind !== 'individual' && r.kind !== 'catch_lot') throw new Error(`${id} は水揚げの単位ではありません（加工ロットに入れられるのは、1尾か水揚げロットだけです）`)
+    const c = custodyOf(evOf[id] ?? [])
+    if (c.holder !== actor) throw new Error(`${id} を今持っているのは ${await bizName(supa, c.holder)} です`)
+    if (c.pending) throw new Error(`${id} は ${await bizName(supa, c.pending)} へ引き渡し中です`)
+    if (c.into) throw new Error(`${id} はもう加工ロット ${c.into} に入れました`)
+    used.push({ id, kg: Number(c.lastKg ?? r.weight_kg) })
+  }
+  const species = byId[inputs[0]].species
+  if (inputs.some((id: string) => byId[id].species !== species)) throw new Error('魚種の違う魚は、同じ加工ロットに入れられません')
+  const total = Math.round(used.reduce((n, u) => n + u.kg, 0) * 100) / 100
+
+  const photo = body.photo ? await savePhoto(supa, itemId, body.photo) : null
+  const where = await locate(supa, actor, body.location ?? null)
+  const lotName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 60) : `${species} 加工ロット`
+  const { error: e3 } = await supa.from('items').insert({ id: itemId, kind: 'process_lot', species, name: lotName, weight_kg: total, quantity: 1, inputs, created_by: actor })
+  if (e3) throw e3
+
+  // 記録：加工ロットに born（入れた魚と重さの一覧を指紋に含める）、入れた魚それぞれに process
+  const t0 = Date.now()
+  const at = (i: number) => new Date(t0 + i).toISOString()
+  let p: Record<string, unknown> = {
+    detail: typeof detail === 'string' && detail ? detail.slice(0, 200) : `${inputs.length}件をまとめて加工ロットに（${total}kg）`,
+    weight_kg: total, inputs: used, item: { kind: 'process_lot', species, name: lotName, weight_kg: total, inputs },
+  }
+  if (photo) p = { ...p, photo }
+  if (where) p = { ...p, location: where }
+  const lotHash = await sha256Hex(canonical({ itemId, type: 'born', actor, payload: p, prevHash: null, createdAt: at(0) }))
+  const events = [{ item_id: itemId, type: 'born', actor, payload: p, prev_hash: null, hash: lotHash, created_at: at(0) }]
+  for (const [i, u] of used.entries()) {
+    const q = { detail: `加工ロット ${itemId} に投入`, into: itemId, weight_kg: u.kg }
+    const prevHash = evOf[u.id]?.at(-1)?.hash ?? null
+    const hash = await sha256Hex(canonical({ itemId: u.id, type: 'process', actor, payload: q, prevHash, createdAt: at(i + 1) }))
+    events.push({ item_id: u.id, type: 'process', actor, payload: q, prev_hash: prevHash, hash, created_at: at(i + 1) })
+  }
+  const { data: saved, error: e4 } = await supa.from('events').insert(events).select('id, item_id, hash')
+  if (e4) throw e4
+
+  // チェーン：加工ロットを発行（親なし。入れた魚の一覧は指紋で守る）し、入れた魚への追記を1回の取引にまとめる
+  const registry = Deno.env.get('REGISTRY_ADDRESS')
+  if (!registry) return { ok: true, count: saved.length, txHash: null }
+  try {
+    const keys = JSON.parse(Deno.env.get('ISSUER_KEYS') ?? '{}')
+    if (!keys[actor]) throw new Error(`事業者 ${actor} の署名鍵が ISSUER_KEYS にありません`)
+    const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(Deno.env.get('CHAIN_RPC_URL') ?? Deno.env.get('AMOY_RPC_URL')))
+    const reg = new ethers.Contract(registry, ABI, wallet)
+    let nonce = await wallet.getNonce('pending')
+    const s = Object.fromEntries(saved.map((x: { item_id: string; id: number; hash: string }) => [x.item_id, x]))
+    const tx1 = await reg.issue(await itemKey(itemId), ethers.ZeroHash, lotHash, { nonce: nonce++, gasLimit: 250000 })
+    const ids = used.map((u) => u.id)
+    const tx2 = await reg.recordBatch(await Promise.all(ids.map((id) => itemKey(id))), ids.map((id) => s[id].hash), { nonce: nonce++, gasLimit: 80000 + 45000 * ids.length })
+    await supa.from('events').update({ tx_hash: tx1.hash }).eq('id', s[itemId].id)
+    await supa.from('events').update({ tx_hash: tx2.hash }).in('id', ids.map((id) => s[id].id))
+    return { ok: true, count: saved.length, txHash: tx2.hash }
+  } catch (e) {
+    const reason = String((e as { shortMessage?: string })?.shortMessage ?? (e as Error)?.message ?? e)
+    return { ok: true, count: saved.length, txHash: null, chainError: reason }
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -341,6 +447,8 @@ Deno.serve(async (req) => {
 
     // まとめて送られてきたとき
     if (Array.isArray(reqBody.batch)) return json(await handleBatch(supa, actor, reqBody))
+    // 加工ロットを作るとき
+    if (reqBody.mix) return json(await handleMix(supa, actor, reqBody))
 
     // 水揚げ（個体IDの発行）は市場だけ
     if (type === 'landing') {
@@ -354,8 +462,10 @@ Deno.serve(async (req) => {
       const c = await custody(supa, parentId)
       if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。加工できるのは持ち主だけです`)
       if (c.pending) throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで加工できません`)
+      if (c.into) throw new Error(`この魚は加工ロット ${c.into} に入れました。加工品は加工ロットから発行してください`)
     } else if (type !== 'landing') {
       const c = await custody(supa, itemId)
+      if (c.into && type !== 'fix') throw new Error(`この魚は加工ロット ${c.into} に入れました。記録は加工ロットに足してください`)
       if (type === 'receive') {
         if (!c.pending) throw new Error('この魚は引き渡し中ではありません（先に、渡す側がせり・出荷で相手を指定します）')
         if (c.pending !== actor) throw new Error(`この魚の受け取り先は ${await bizName(supa, c.pending)} です。ほかの事業者は受け取れません`)
@@ -386,7 +496,7 @@ Deno.serve(async (req) => {
     if (type === 'activate') throw new Error('QRは販売開始を記録すると自動で有効になります')
 
     // 写し（item）・写真の指紋（photo）・場所（location）はサーバーが作ったものだけ。画面から payload で送られてきたものは捨てる
-    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, ...rest } = payload
+    const { item: _item, photo: _photo, location: _location, to: _to, from: _from, weight_check: _wc, toId: _toId, into: _into, inputs: _inputs, ...rest } = payload
     let body: Record<string, unknown> = { ...rest, ...extra }
 
     // 発行する項目を先に確かめ、写真を保存してから items を作る（途中で失敗しても items だけが残らないように）
@@ -396,6 +506,8 @@ Deno.serve(async (req) => {
       const { data: parent } = await supa.from('items').select('species').eq('id', parentId).maybeSingle()
       if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
       row.species = parent.species
+      const { data: pevs } = await supa.from('events').select('type, actor, payload').eq('item_id', parentId).order('id')
+      await checkYield(supa, parentId, pevs ?? [], Number(row.weight_kg))
     }
     if (photo) body = { ...body, photo: await savePhoto(supa, itemId, photo) }
     const where = await locate(supa, actor, location)

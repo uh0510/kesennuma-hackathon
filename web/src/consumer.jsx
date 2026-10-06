@@ -7,7 +7,7 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
-import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll, useVesselActivity } from './model.js'
+import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll, useVesselActivity, useVesselActivities } from './model.js'
 import { explorerTx, explorerAddress } from './api.js'
 import { checkAis } from './lib/ais.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
@@ -274,6 +274,48 @@ function AisCheck({ root, ais, t, lang }) {
   )
 }
 
+// 加工ロットから作った商品：入れた魚ごとに、船・海域・水揚げと、船の位置の記録との照らし合わせ
+function MixSources({ origins, inputKg, t, lang }) {
+  const list = useVesselActivities(origins)
+  const tr = (x) => term(lang, x)
+  const sample = list.some((a) => a?.sample)
+  return (
+    <section className="story-section">
+      <motion.div {...reveal}>
+        <div className="eyebrow-dark">WHAT WENT INTO THIS PRODUCT</div>
+        <h2 className="story-h2">{t.mixTitle(origins.length)}</h2>
+        <p className="story-lead">{t.mixLead}</p>
+      </motion.div>
+      <motion.div className="ais-card glass-dark" {...reveal} transition={{ ...reveal.transition, delay: 0.15 }}>
+        {sample && <div className="ais-sample">{t.aisSample}</div>}
+        {origins.map((o, i) => {
+          const ais = list[i]
+          const res = ais && !ais.error ? checkAis({ catchArea: o.info.catchArea, landingPort: o.info.port, landedAt: o.info.landedAt ?? o.info.createdAt, ais }) : null
+          const level = !res ? 'warn' : res.area === 'ok' && res.port !== 'ng' ? 'ok' : res.area === 'ng' ? 'ng' : 'warn'
+          const status = ais === null ? t.aisLoading : !res ? t.mixNoAis
+            : res.area === 'ok' ? (res.port === 'ng' ? t.aisPortNg(tr(o.info.port)) : t.mixOk)
+              : { partial: t.aisAreaPartial, ng: t.aisAreaNg, none: t.aisAreaNone }[res.area]
+          const mark = { ok: '✓', ng: '!', warn: res ? '!' : '?' }[level]
+          return (
+            <div key={o.id} className="ais-row" data-level={level}>
+              <span className="ais-mark" aria-hidden>{mark}</span>
+              <div>
+                <div className="ais-row-title">{tr(o.info.shipName) ?? '—'} · {tr(o.info.catchArea) ?? t.noArea}</div>
+                <div className="ais-row-main">{status}</div>
+                <div className="ais-row-sub">{t.mixLanded(o.info.landedAt ? ymd(o.info.landedAt) : '—', inputKg[o.id] ?? o.kg)}</div>
+              </div>
+            </div>
+          )
+        })}
+        <div className="ais-foot">
+          <a href="https://globalfishingwatch.org" target="_blank" rel="noreferrer">Powered by Global Fishing Watch</a>
+          <span>{t.aisNote}</span>
+        </div>
+      </motion.div>
+    </section>
+  )
+}
+
 // 地図で予期しないエラーが起きても、ページ全体を道連れにしない
 class MapBoundary extends React.Component {
   state = { error: null }
@@ -291,9 +333,9 @@ function Family({ items, it, t, lang }) {
   return (
     <section className="story-section">
       <motion.div {...reveal}>
-        <div className="eyebrow-dark">{parent.unit === 'lot' ? 'ONE CATCH, MANY TABLES' : 'ONE FISH, MANY TABLES'}</div>
+        <div className="eyebrow-dark">{parent.unit === 'lot' ? 'ONE CATCH, MANY TABLES' : parent.unit === 'mix' ? 'ONE BATCH, MANY TABLES' : 'ONE FISH, MANY TABLES'}</div>
         <h2 className="story-h2">{t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, term(lang, parent.name), kids.length)}</h2>
-        <p className="story-lead">{parent.unit === 'lot' ? t.familyLeadLot : t.familyLead}</p>
+        <p className="story-lead">{parent.unit === 'lot' ? t.familyLeadLot : parent.unit === 'mix' ? t.familyLeadMix : t.familyLead}</p>
       </motion.div>
       <motion.div className="weight-bar" {...reveal} transition={{ ...reveal.transition, delay: 0.15 }}>
         {kids.map((k, i) => (
@@ -363,8 +405,14 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const tr = (x) => term(lang, x)
   const when = (d) => (lang === 'en' ? new Date(d).toLocaleString('en-US', { timeZone: 'Asia/Tokyo', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : mdhm(d))
   const it = items[cur]
-  const chain = useMemo(() => [...ancestors(items, cur), it], [items, cur])
-  const root = chain[0]
+  // main：元（1尾・水揚げロット・加工ロット）から今の商品まで
+  // 加工ロットから作った商品は、入れた魚すべてが元の魚（origins）。root はその最初の1件（海域・写真・地図に使う）
+  const main = useMemo(() => [...ancestors(items, cur), it], [items, cur])
+  const lot = main[0].unit === 'mix' ? main[0] : null
+  const origins = useMemo(() => (lot ? lot.info.inputs.map((id) => items[id]).filter(Boolean) : [main[0]]), [main])
+  const chain = useMemo(() => (lot ? [...origins, ...main] : main), [main, origins])
+  const root = origins[0] ?? main[0]
+  const ships = [...new Set(origins.map((o) => o.info.shipName).filter(Boolean))]
   const verify = useVerifyAll(chain)
   const [proofOpen, setProofOpen] = useState(false)
   const journeyRef = useRef(null)
@@ -403,11 +451,14 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
 
   // 道のり：漁獲（船の情報）＋ 各記録を時間順に
   const chapters = useMemo(() => {
-    const list = [{
+    const list = [lot ? {
+      key: 'catch', en: 'CAUGHT', ja: '漁獲', title: [...new Set(origins.map((o) => tr(o.info.catchArea) ?? t.noArea))].join(' / '),
+      lines: [ships.map(tr).join(' · '), t.mixChapter(origins.length)].filter(Boolean),
+    } : {
       key: 'catch', en: 'CAUGHT', ja: '漁獲', title: tr(root.info.catchArea) ?? t.noArea,
       lines: [root.info.shipName && `${tr(root.info.shipName)} · ${tr(root.info.gear) ?? ''}`, root.info.period && t.period(root.info.period)].filter(Boolean),
     }]
-    const evs = chain.flatMap((c) => c.rawEvents.map((e) => ({ e, c }))).filter(({ e }) => EV[e.type]).sort((a, b) => a.e.id - b.e.id)
+    const evs = main.flatMap((c) => c.rawEvents.map((e) => ({ e, c }))).filter(({ e }) => EV[e.type]).sort((a, b) => a.e.id - b.e.id)
     for (const { e, c } of evs) {
       const ev = c.events.find((x) => x.id === e.id)
       if (e.type === 'landing') list.push({ key: e.id, ...EV.landing, title: tr(c.info.port ?? '気仙沼港'), big: c.kg, unit: 'kg', lines: [t.landedOn(ymd(e.created_at)), tr(ev.who)], at: e.created_at })
@@ -446,14 +497,14 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
         <div className={heroPhoto ? 'hero-grid' : undefined}>
         {heroPhoto && <HeroPhoto main={heroPhoto} sub={ownPhoto} root={root} it={it} verify={verify} t={t} lang={lang} />}
         <div className="hero-text">
-        <motion.div className="eyebrow-dark" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease }}>{root.unit === 'lot' ? t.eyebrowLot : t.eyebrow}</motion.div>
+        <motion.div className="eyebrow-dark" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease }}>{lot ? t.eyebrowMix : root.unit === 'lot' ? t.eyebrowLot : t.eyebrow}</motion.div>
         <motion.h1 className="story-h1" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, ease, delay: 0.1 }}>{tr(it.name)}</motion.h1>
         <motion.p className="story-meta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.25 }}>
           {it.qty > 1 && it.unitKg
-            ? <>{pack && pack <= it.qty ? t.packNo(pack, it.qty) : t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, tr(root.info.shipName), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
-            : t.meta(it.kg, tr(root.info.shipName), tr(root.species), it.kind === 'prod')}
+            ? <>{pack && pack <= it.qty ? t.packNo(pack, it.qty) : t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, ships.map(tr).join('・'), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
+            : t.meta(it.kg, ships.map(tr).join('・'), tr(root.species), it.kind === 'prod')}
           {/* 水揚げロット：1尾ではなく「どの船が、いつ、どのくらい揚げたまとまりか」を出す */}
-          {root.unit === 'lot' && <><br />{t.fromLot(root.info.landedAt ? new Date(root.info.landedAt).toLocaleDateString(lang === 'en' ? 'en-US' : 'ja-JP', { timeZone: 'Asia/Tokyo', month: lang === 'en' ? 'short' : 'numeric', day: 'numeric' }) : '', tr(root.info.shipName), tr(root.species), tr(root.grade), root.count, root.kg)}</>}
+          {!lot && root.unit === 'lot' && <><br />{t.fromLot(root.info.landedAt ? new Date(root.info.landedAt).toLocaleDateString(lang === 'en' ? 'en-US' : 'ja-JP', { timeZone: 'Asia/Tokyo', month: lang === 'en' ? 'short' : 'numeric', day: 'numeric' }) : '', tr(root.info.shipName), tr(root.species), tr(root.grade), root.count, root.kg)}</>}
         </motion.p>
         <Seal verify={verify} t={t} />
         <div className="hero-stats">
@@ -476,7 +527,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       </section>
 
       {/* ---- 船の位置の記録との照らし合わせ ---- */}
-      <AisCheck root={root} ais={ais} t={t} lang={lang} />
+      {lot ? <MixSources origins={origins} inputKg={lot.info.inputKg} t={t} lang={lang} /> : <AisCheck root={root} ais={ais} t={t} lang={lang} />}
 
       {/* ---- 道のり ---- */}
       <section className="story-section" ref={journeyRef}>

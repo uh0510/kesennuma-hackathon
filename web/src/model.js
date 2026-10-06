@@ -21,6 +21,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
     const snap = evs.find((e) => e.payload?.item)?.payload.item ?? null
     let attrs
     const lot = r.kind === 'catch_lot'
+    const mix = r.kind === 'process_lot'
     const grade = landing?.payload?.grade ?? null
     if (r.kind === 'individual' || lot) {
       const s = snap?.ship ?? ship[r.ship_id] ?? {}
@@ -28,6 +29,8 @@ export function buildItems({ items, events, ships, products, businesses }) {
         ['漁船', s.name ?? '—'], ['漁船登録番号', s.reg_no ?? '—'], ['漁業許可番号', s.permit_no ?? '—'], ['漁法', s.gear ?? '—'],
         ['漁獲海域', r.catch_area ?? '—'], ['漁獲期間', landing?.payload?.period || '—'], ['水揚げ港', r.landing_port ?? '—'],
         ['水揚げ日', r.landed_at ? ymd(r.landed_at) : '—'], [lot ? '重量（水揚げ時の合計）' : '重量（水揚げ時）', `${r.weight_kg} kg`]]
+    } else if (mix) {
+      attrs = [['魚種', r.species], ['入れた魚', `${r.inputs?.length ?? 0}件`], ['加工者', biz[r.created_by]?.name ?? '—'], ['作成日', ymd(r.created_at)], ['重量（入れた魚の合計）', `${r.weight_kg} kg`]]
     } else {
       const p = snap?.product ?? prod[r.product_id]
       const made = ymd(r.created_at)
@@ -36,10 +39,10 @@ export function buildItems({ items, events, ships, products, businesses }) {
       if (p?.storage) attrs.push(['保存方法', p.storage])
       if (p?.shelf_days != null) attrs.push([p.shelf_days > 5 ? '賞味期限' : '消費期限', addDays(r.created_at, p.shelf_days)])
     }
-    // kind：'ind'＝水揚げの単位（元）、'prod'＝加工品。水揚げの単位は unit で分ける（'fish'＝1尾、'lot'＝水揚げロット）
+    // kind：'ind'＝元になる単位、'prod'＝加工品。元は unit で分ける（'fish'＝1尾、'lot'＝水揚げロット、'mix'＝加工ロット：何尾かをまとめて加工に入れたもの）
     out[r.id] = {
-      id: r.id, parent: r.parent_id, kind: r.kind === 'product' ? 'prod' : 'ind', unit: lot ? 'lot' : r.kind === 'individual' ? 'fish' : null,
-      grade, count: lot ? r.quantity : r.kind === 'individual' ? 1 : null, name: r.name, kg: Number(r.weight_kg),
+      id: r.id, parent: r.parent_id, kind: r.kind === 'product' ? 'prod' : 'ind', unit: lot ? 'lot' : mix ? 'mix' : r.kind === 'individual' ? 'fish' : null,
+      grade, count: lot ? r.quantity : r.kind === 'individual' ? 1 : mix ? r.inputs?.length ?? 0 : null, name: r.name, kg: Number(r.weight_kg),
       species: r.species, productId: r.product_id, qr: r.qr_status, attrs, children: [], rawEvents: evs, row: r, snap,
       qty: r.quantity ?? 1, unitKg: r.unit_kg != null ? Number(r.unit_kg) : null,
       photos: evs.filter((e) => e.payload?.photo?.path).map((e) => ({ id: e.id, url: photoUrl(e.payload.photo.path), type: e.type, at: e.created_at })),
@@ -48,7 +51,10 @@ export function buildItems({ items, events, ships, products, businesses }) {
         catchFrom: landing?.payload?.catch_from ?? null, catchTo: landing?.payload?.catch_to ?? null,
         shipId: r.ship_id ?? null, shipName: (snap?.ship ?? ship[r.ship_id])?.name ?? null, gear: (snap?.ship ?? ship[r.ship_id])?.gear ?? null, maker: biz[r.created_by]?.name ?? null,
         storage: (snap?.product ?? prod[r.product_id])?.storage ?? null, shelfDays: (snap?.product ?? prod[r.product_id])?.shelf_days ?? null,
+        inputs: r.inputs ?? [], inputKg: Object.fromEntries((evs.find((e) => e.type === 'born')?.payload?.inputs ?? []).map((x) => [x.id, x.kg])),
       },
+      // 加工ロットに入れた魚：入れた先の加工ロットのID（入れたあとは、ここに記録を足さない）
+      into: evs.findLast((e) => e.type === 'process' && e.payload?.into)?.payload.into ?? null,
       events: evs.map((e) => ({
         id: e.id, t: mdhm(e.created_at), type: e.type, who: biz[e.actor]?.name ?? '—', detail: e.payload?.detail ?? '', hash: e.hash, tx: e.tx_hash,
         loc: e.payload?.location ?? null, home: biz[e.actor]?.lat != null ? [biz[e.actor].lng, biz[e.actor].lat] : null, to: e.payload?.to ?? null, from: e.payload?.from ?? null, wc: e.payload?.weight_check ?? null, checks: e.payload?.checks ?? null,
@@ -65,7 +71,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
 
 // items の値が、発行したときの写し（指紋に含まれている）と食い違っていないか
 // 写しのない古い記録は比べない
-const SNAP_FIELDS = ['species', 'name', 'weight_kg', 'catch_area', 'landing_port', 'landed_at', 'parent_id']
+const SNAP_FIELDS = ['species', 'name', 'weight_kg', 'catch_area', 'landing_port', 'landed_at', 'parent_id', 'inputs']
 export function snapshotDiff(it) {
   const snap = it.snap
   if (!snap) return []
@@ -73,6 +79,7 @@ export function snapshotDiff(it) {
     if (a == null && b == null) return true
     if (k === 'weight_kg') return Number(a) === Number(b)
     if (k === 'landed_at') return new Date(a).getTime() === new Date(b).getTime()
+    if (k === 'inputs') return JSON.stringify(a) === JSON.stringify(b)
     return a === b
   }
   return SNAP_FIELDS.filter((k) => k in snap && !same(k, snap[k], it.row[k]))
@@ -100,6 +107,11 @@ export function custodyOf(evs, biz, itemKg) {
 
 export const ancestors = (items, id) => { const a = []; let c = items[id]; while (c?.parent) { c = items[c.parent]; a.unshift(c) } return a }
 export const rootOf = (items, id) => ancestors(items, id)[0] ?? items[id]
+// 元の魚：ふつうは元の1尾（水揚げロット）。加工ロットなら、入れた魚すべて
+export const originsOf = (items, id) => {
+  const root = rootOf(items, id)
+  return root.unit === 'mix' ? root.info.inputs.map((x) => items[x]).filter(Boolean) : [root]
+}
 
 // 1件の改ざん検証（記録が増えたら計算し直す）
 export function useVerify(item) {
@@ -135,26 +147,33 @@ export function useVerifyAll(chain) {
   return res
 }
 
-// 船の位置の記録（AIS）。元の1尾（root）の船・水揚げ日・漁獲期間で問い合わせる
-// 返す値：undefined＝船にひも付いていない / null＝読み込み中 / { error }＝読めなかった / それ以外＝vessel-activity の結果
+// 船の位置の記録（AIS）。元の魚（1尾・水揚げロット）の船・水揚げ日・漁獲期間で問い合わせる
+// 返す値（1件ごと）：undefined＝船にひも付いていない / null＝読み込み中 / { error }＝読めなかった / それ以外＝vessel-activity の結果
 // 同じ問い合わせは画面を移っても1回だけ（Global Fishing Watch への問い合わせを減らす）
 const aisCache = new Map()
-export function useVesselActivity(root) {
-  const shipId = root?.info.shipId
-  const key = shipId ? [shipId, root.info.landedAt ?? root.info.createdAt, root.info.catchFrom, root.info.catchTo].join('|') : ''
-  const [ais, setAis] = useState(undefined)
-  useEffect(() => {
-    if (!key) { setAis(undefined); return }
-    let alive = true
-    setAis(null)
-    if (!aisCache.has(key)) {
-      const p = fetchVesselActivity(shipId, root.info.landedAt ?? root.info.createdAt, root.info.catchFrom, root.info.catchTo)
-        .then((r) => (r.linked ? r : undefined))
-        .catch((e) => { aisCache.delete(key); return { error: e.message } })
-      aisCache.set(key, p)
-    }
-    aisCache.get(key).then((r) => alive && setAis(r))
-    return () => { alive = false }
-  }, [key])
-  return ais
+const aisKey = (o) => (o?.info.shipId ? [o.info.shipId, o.info.landedAt ?? o.info.createdAt, o.info.catchFrom, o.info.catchTo].join('|') : '')
+function loadAis(o, key) {
+  if (!aisCache.has(key)) {
+    const p = fetchVesselActivity(o.info.shipId, o.info.landedAt ?? o.info.createdAt, o.info.catchFrom, o.info.catchTo)
+      .then((r) => (r.linked ? r : undefined))
+      .catch((e) => { aisCache.delete(key); return { error: e.message } })
+    aisCache.set(key, p)
+  }
+  return aisCache.get(key)
 }
+export function useVesselActivities(origins) {
+  const keys = origins.map(aisKey)
+  const k = keys.join('||')
+  const blank = () => keys.map((x) => (x ? null : undefined))
+  const [res, setRes] = useState(blank)
+  useEffect(() => {
+    let alive = true
+    setRes(blank())
+    keys.forEach((key, i) => {
+      if (key) loadAis(origins[i], key).then((r) => alive && setRes((prev) => { const n = [...prev]; n[i] = r; return n }))
+    })
+    return () => { alive = false }
+  }, [k])
+  return res.length === keys.length ? res : blank()
+}
+export const useVesselActivity = (origin) => useVesselActivities(origin ? [origin] : [])[0]

@@ -29,7 +29,10 @@ export const term = (lang, s) => (lang === 'en' && s && TERMS[s]) || s
 
 export const STR = {
   ja: {
-    eyebrow: 'GYOSEKI · この1尾の戸籍', eyebrowLot: 'GYOSEKI · この魚の戸籍',
+    eyebrow: 'GYOSEKI · この1尾の戸籍', eyebrowLot: 'GYOSEKI · この魚の戸籍', eyebrowMix: 'GYOSEKI · この商品の戸籍',
+    mixTitle: (n) => `${n}件の魚から作りました。`, mixLead: '一緒に加工した魚です。どれも登録された船の魚で、1件ずつ船の位置の記録と照らし合わせています。',
+    mixChapter: (n) => `${n}件の魚をまとめて加工`, mixOk: '申告どおり', mixNoAis: '位置データなし', mixLanded: (d, kg) => `${d} 水揚げ · ${kg} kg`,
+    familyLeadMix: 'これはそのうちの1つです。分けた重さの合計が、入れた魚の重さの合計を超えないことを、記録のたびに確かめています。',
     fromLot: (day, ship, species, grade, count, kg) => `${day} に${ship ?? ''}が水揚げした${species}（${grade ?? '区分なし'}）約 ${count} 尾・${kg} kg のまとまりから`,
     tagline: '獲れた海から食卓まで、1尾ごとの戸籍',
     meta: (kg, ship, species, fromProduct) => `${kg} kg${ship ? ` ・ ${ship} が獲った${species}${fromProduct ? 'から' : ''}` : ''}`,
@@ -75,7 +78,10 @@ export const STR = {
     aisSample: '表示例：この欄は仕組みを見せるための見本です。位置の記録は、この商品の船のものではありません（別の船の公開データ、または作りもののデータ）。', aisMapNote: '橙の点＝船が漁をしたと見られる場所（AIS）',
   },
   en: {
-    eyebrow: 'GYOSEKI · The registry of this fish', eyebrowLot: 'GYOSEKI · The registry of this catch',
+    eyebrow: 'GYOSEKI · The registry of this fish', eyebrowLot: 'GYOSEKI · The registry of this catch', eyebrowMix: 'GYOSEKI · The registry of this product',
+    mixTitle: (n) => `Made from ${n} catches.`, mixLead: 'These fish were processed together. Every one came from a registered vessel and was checked against vessel tracking data.',
+    mixChapter: (n) => `${n} catches processed together`, mixOk: 'Matches the declaration', mixNoAis: 'No tracking data', mixLanded: (d, kg) => `Landed ${d} · ${kg} kg`,
+    familyLeadMix: 'This is one of them. Every time a record is added, we check that the pieces never weigh more than the fish that went in.',
     fromLot: (day, ship, species, grade, count, kg) => `From a catch of about ${count} ${species} (${grade ?? 'Ungraded'}, ${kg} kg in total) landed by ${ship ?? 'a vessel'} on ${day}`,
     tagline: 'A registry for every fish, from the sea to your table',
     meta: (kg, ship, species, fromProduct) => `${kg} kg${ship ? ` · ${fromProduct ? `from a ${species}` : species} caught by ${ship}` : ''}`,

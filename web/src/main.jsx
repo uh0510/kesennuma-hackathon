@@ -15,20 +15,20 @@ import {
   IconFish, IconSearch, IconPlus, IconCut, IconQrcode, IconShieldCheck, IconSailboat, IconAnchor, IconGavel,
   IconPackage, IconTruck, IconSnowflake, IconPencil, IconCornerDownRight, IconUserSearch, IconDatabase,
   IconAlertTriangle, IconTag, IconLogin, IconLogout, IconLink, IconChevronRight, IconChevronLeft, IconUserCircle,
-  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin, IconPackageImport, IconPackageExport, IconBuildingStore, IconArrowRight, IconPrinter,
+  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin, IconPackageImport, IconPackageExport, IconBuildingStore, IconArrowRight, IconPrinter, IconStack2, IconScale,
 } from '@tabler/icons-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
-  registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId,
+  registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId, makeProcessLot,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { checkAis } from './lib/ais.js'
 import { compressImage } from './lib/photo.js'
 import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
-import { ymd, shortHash, buildItems, ancestors, rootOf, useVerify, useVerifyAll, useVesselActivity } from './model.js'
+import { ymd, shortHash, buildItems, ancestors, rootOf, originsOf, useVerify, useVerifyAll, useVesselActivities } from './model.js'
 import { ConsumerNotice, ConsumerView } from './consumer.jsx'
 
 // Apple Blue を中心にした色の段階（Mantine は10段階で持つ）
@@ -80,9 +80,9 @@ const SPECIES = [
 ]
 const GRADES = ['大', '中', '小', '区分なし']
 // 「個体」「水揚げロット」「加工品」の呼び名
-const unitWord = (it) => (it.kind === 'prod' ? '加工品' : it.unit === 'lot' ? '水揚げロット' : '個体')
+const unitWord = (it) => (it.kind === 'prod' ? '加工品' : it.unit === 'lot' ? '水揚げロット' : it.unit === 'mix' ? '加工ロット' : '個体')
 // 重さの入力の刻み：水揚げロット（数百kg〜）・1尾（数十kg〜）・加工品（kg 未満〜）
-const kgInput = (it) => (it.kind === 'prod' ? { steps: [0.1, 1], decimals: 2 } : it.unit === 'lot' ? { steps: [10, 100], decimals: 1 } : { steps: [1, 10], decimals: 1 })
+const kgInput = (it) => (it.kind === 'prod' ? { steps: [0.1, 1], decimals: 2 } : it.unit === 'lot' || it.unit === 'mix' ? { steps: [10, 100], decimals: 1 } : { steps: [1, 10], decimals: 1 })
 const AREAS = ['北西太平洋（FAO 61）', '三陸沖', '中西部太平洋（FAO 71）', '南西太平洋（FAO 81）', 'インド洋東部（FAO 57）', '中東部大西洋（FAO 34）']
 // 水揚げ港：遠洋の船は、海外（スペイン）で水揚げしてから冷凍で日本へ運ぶことがある
 const PORTS = ['気仙沼港', 'ラス・パルマス港（スペイン）']
@@ -191,12 +191,13 @@ function BigNumber({ label, value, onChange, unit, steps = [1, 10], min = 0, dec
 const STAGES = {
   ind: [['landing', '水揚げ', IconAnchor], ['auction', 'せり', IconGavel], ['receive', '受け取り', IconPackageImport], ['process', '加工', IconCut]],
   prod: [['born', '発行', IconCornerDownRight], ['ship', '出荷', IconTruck], ['receive', '受け取り', IconPackageImport], ['sell', '販売', IconBuildingStore]],
+  mix: [['born', 'ロット作成', IconStack2], ['process', '加工', IconCut]],
 }
 function Stages({ it }) {
   const done = new Set(it.events.map((e) => e.type))
   return (
     <div className="stages">
-      {STAGES[it.kind].map(([k, label, Icon]) => (
+      {STAGES[it.unit === 'mix' ? 'mix' : it.kind].map(([k, label, Icon]) => (
         <div key={k} className="stage" data-done={done.has(k) || undefined}>
           <div className="stage-dot"><Icon size={16} /></div>
           <Text size="xs" fw={600}>{label}</Text>
@@ -213,8 +214,8 @@ function Overview({ items, dark = false }) {
   const today = ymd(new Date())
   const stats = [
     { label: '今日の水揚げ', value: roots.filter((r) => r.info.landedAt && ymd(r.info.landedAt) === today).length, unit: '件', icon: IconAnchor, color: '#0a84ff' },
-    { label: '水揚げの記録', value: roots.length, unit: '件', icon: IconFish, color: '#5e5ce6' },
-    { label: '加工品', value: all.length - roots.length, unit: '件', icon: IconPackage, color: '#ff9f0a' },
+    { label: '水揚げの記録', value: roots.filter((r) => r.unit !== 'mix').length, unit: '件', icon: IconFish, color: '#5e5ce6' },
+    { label: '加工品', value: all.filter((x) => x.kind === 'prod').length, unit: '件', icon: IconPackage, color: '#ff9f0a' },
     { label: '販売中', value: all.filter((x) => x.sold).length, unit: '件', icon: IconBuildingStore, color: '#30d158' },
   ]
   return (
@@ -254,39 +255,61 @@ function WeightNote({ wc }) {
 // also：一緒に確かめる記録（まとめて受け取る加工品など）。from：渡し手の事業者（指定の仕入れ先か確かめる）
 // enabled＝false のあいだは問い合わせない（閉じている受け取りの画面のため）
 function useChecks({ items, it, myBiz, also = [], from = null, enabled = true }) {
-  const root = rootOf(items, it.id)
-  const verify = useVerifyAll(enabled ? [...ancestors(items, it.id), it, ...also] : [])
-  const ais = useVesselActivity(enabled ? root : null)
+  // 元の魚：ふつうは1尾（水揚げロット）。加工ロットから作ったものは、入れた魚すべて
+  const origins = originsOf(items, it.id)
+  const mixed = rootOf(items, it.id).unit === 'mix'
+  const verify = useVerifyAll(enabled ? [...(mixed ? origins : []), ...ancestors(items, it.id), it, ...also] : [])
+  const aisList = useVesselActivities(enabled ? origins : [])
   const rows = []
   const row = (key, title, level, text) => rows.push({ key, title, level, text })
   row('rec', '記録', !verify ? 'wait' : verify.ok ? 'ok' : 'ng',
     !verify ? '照合中…' : verify.ok ? `書き換えなし（${verify.count}件）` : '書き換えの疑い')
 
-  const { catchArea, port, shipName, shipId } = root.info
-  if (ais === undefined) row('area', '漁場', 'warn', '船の位置データなし')
-  else if (ais === null) row('area', '漁場', 'wait', '照合中…')
-  else if (ais.error) row('area', '漁場', 'warn', '船の位置データを読み込めません')
-  else {
-    const res = checkAis({ catchArea, landingPort: port, landedAt: root.info.landedAt ?? root.info.createdAt, ais })
+  // 魚ごとに判定する（short：何尾かをまとめて出すときの言い方）
+  const per = origins.map((o, i) => {
+    const ais = enabled ? aisList[i] : null
+    const name = o.info.shipName ?? o.id
+    if (ais === undefined) return { name, area: { level: 'warn', text: '船の位置データなし', short: '位置データなし' } }
+    if (ais === null) return { name, area: { level: 'wait' } }
+    if (ais.error) return { name, area: { level: 'warn', text: '船の位置データを読み込めません', short: '読み込めない' } }
+    const { catchArea, port } = o.info
+    const res = checkAis({ catchArea, landingPort: port, landedAt: o.info.landedAt ?? o.info.createdAt, ais })
     const mark = ais.sample ? '（見本）' : ''
     const actual = res.top[0] ? `実際は FAO ${res.top[0][0]}` : ''
-    row('area', '漁場', { ok: 'ok', partial: 'warn', ng: 'ng', none: 'warn' }[res.area], {
-      ok: `申告どおり（${catchArea}）`, partial: `一部が申告外（${actual}）`, ng: `申告と違う（${actual}）`,
-      none: ais.declared ? '漁獲期間に操業データなし' : '操業データなし',
-    }[res.area] + mark)
-    if (res.port) row('port', '入港', res.port === 'ok' ? 'ok' : 'warn', (res.port === 'ok' ? `${port} ${ymd(res.visit.start)}` : `${port}の入港データなし`) + mark)
+    const area = {
+      ok: { level: 'ok', text: `申告どおり（${catchArea}）` }, partial: { level: 'warn', text: `一部が申告外（${actual}）`, short: '一部が申告外' },
+      ng: { level: 'ng', text: `申告と違う（${actual}）`, short: '申告と違う' },
+      none: { level: 'warn', text: ais.declared ? '漁獲期間に操業データなし' : '操業データなし', short: '操業データなし' },
+    }[res.area]
+    const portRow = !res.port ? null : res.port === 'ok' ? { level: 'ok', text: `${port} ${ymd(res.visit.start)}` } : { level: 'warn', text: `${port}の入港データなし`, short: '入港データなし' }
+    return { name, sample: ais.sample, area: { ...area, text: area.text + mark }, port: portRow && { ...portRow, text: portRow.text + mark } }
+  })
+  // 1尾ならそのまま。何尾かあれば「すべて〜」か、理由ごとに船の名前を並べる
+  const add = (key, title, parts, okWord) => {
+    const live = parts.filter(Boolean)
+    if (!live.length) return
+    if (origins.length === 1) return row(key, title, live[0].level, live[0].text)
+    if (live.some((x) => x.level === 'wait')) return row(key, title, 'wait', '照合中…')
+    const bad = live.filter((x) => x.level !== 'ok')
+    if (!bad.length) return row(key, title, 'ok', `${okWord}（${live.length}件）`)
+    const g = {}
+    for (const x of bad) (g[x.short] ??= new Set()).add(x.name)
+    row(key, title, bad.some((x) => x.level === 'ng') ? 'ng' : 'warn', Object.entries(g).map(([k, v]) => `${k}：${[...v].join('・')}`).join('、'))
   }
-
-  if (myBiz?.designated_ships && shipId) {
-    const ok = myBiz.designated_ships.includes(shipId)
-    row('ship', '漁船', ok ? 'ok' : 'ng', `${shipName}（${ok ? '指定船' : '指定外'}）`)
+  add('area', '漁場', per.map((x) => x.area && { ...x.area, name: x.name }), '申告どおり')
+  add('port', '入港', per.map((x) => x.port && { ...x.port, name: x.name }), '入港を確認')
+  if (myBiz?.designated_ships) {
+    add('ship', '漁船', origins.filter((o) => o.info.shipId).map((o) => {
+      const ok = myBiz.designated_ships.includes(o.info.shipId)
+      return { level: ok ? 'ok' : 'ng', text: `${o.info.shipName}（${ok ? '指定船' : '指定外'}）`, short: '指定外', name: o.info.shipName }
+    }), '指定船')
   }
   if (myBiz?.designated_suppliers && from) {
     const ok = myBiz.designated_suppliers.includes(from.id)
     row('from', '仕入れ先', ok ? 'ok' : 'ng', `${from.name}（${ok ? '指定先' : '指定外'}）`)
   }
   const issues = rows.filter((r) => r.level === 'ng' || r.level === 'warn')
-  return { rows, issues, loading: rows.some((r) => r.level === 'wait'), sample: ais?.sample ?? false }
+  return { rows, issues, loading: rows.some((r) => r.level === 'wait'), sample: per.some((x) => x.sample) }
 }
 
 const CHECK_LOOK = {
@@ -338,6 +361,117 @@ function DetailChecks({ items, it, myBiz, from }) {
       <CheckRows rows={checks.rows} />
       <Text size="xs" c="dimmed" mt={6}>船の位置：Global Fishing Watch（約4日遅れ）{checks.sample ? '　※（見本）は表示用の見本データ' : ''}</Text>
     </div>
+  )
+}
+
+// 加工ロットに入れた魚（押すとその魚を開く）
+function MixInputs({ items, lot, setSel }) {
+  return (
+    <div>
+      <Text className="section-label">入れた魚（{lot.info.inputs.length}件・{lot.kg} kg）</Text>
+      <div className="inset-list glass">
+        {lot.info.inputs.map((id) => {
+          const x = items[id]
+          return (
+            <UnstyledButton key={id} className="list-row" onClick={() => x && setSel(id)}>
+              {x && <ItemAvatar it={x} size={32} />}
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <Text size="sm" fw={600} truncate>{x ? `${x.info.shipName ?? '—'}・${x.info.catchArea ?? '—'}` : id}</Text>
+                <Text size="xs" c="dimmed" truncate>{lot.info.inputKg[id] ?? x?.kg} kg{x?.info.landedAt ? ` · ${ymd(x.info.landedAt)} 水揚げ` : ''} · <span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{id}</span></Text>
+              </div>
+              {x && <IconChevronRight size={16} color="var(--apple-text-3)" />}
+            </UnstyledButton>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// 加工ロットを作る：自分が持っていて、まだ加工していない同じ魚種の魚を選ぶ（重さは受け取ったときに量った重さ）
+function MixModal({ opened, onClose, item, items, myId, busy, onSave }) {
+  const pool = Object.values(items).filter((x) => x.kind === 'ind' && x.unit !== 'mix' && x.species === item.species && !x.into
+    && x.children.length === 0 && x.custody.holder === myId && !x.custody.pending)
+  const [picked, setPicked] = useState(() => new Set([item.id]))
+  const [name, setName] = useState(`${item.species} 加工ロット`)
+  const sel = pool.filter((x) => picked.has(x.id))
+  const total = sel.reduce((n, x) => n + x.custody.lastKg, 0)
+  const toggle = (id) => setPicked((st) => { const n = new Set(st); n.has(id) ? n.delete(id) : n.add(id); return n })
+  return (
+    <Sheet opened={opened} onClose={onClose} title="加工ロットにまとめる">
+      <Stack gap="lg">
+        <div>
+          <Group justify="space-between" mb={8}>
+            <Text className="field-label" mb={0}>入れる魚（{item.species}・手元にあるもの）</Text>
+            <Text size="sm" fw={700}>{sel.length}件・{total.toFixed(1)} kg</Text>
+          </Group>
+          <div className="inset-list glass">
+            {pool.length === 0 && <Text size="sm" c="dimmed" p="md">手元に、まとめられる魚がありません</Text>}
+            {pool.map((x) => (
+              <UnstyledButton key={x.id} className="list-row" data-active={picked.has(x.id) || undefined} onClick={() => toggle(x.id)}>
+                <Checkbox checked={picked.has(x.id)} readOnly tabIndex={-1} />
+                <ItemAvatar it={x} size={32} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <Text size="sm" fw={600} truncate>{x.info.shipName ?? '—'}・{x.info.catchArea ?? '—'}</Text>
+                  <Text size="xs" c="dimmed" truncate>{x.custody.lastKg} kg · <span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{x.id}</span></Text>
+                </div>
+              </UnstyledButton>
+            ))}
+          </div>
+        </div>
+        <TextInput label="ロットの名前" value={name} onChange={(e) => setName(e.currentTarget.value)} />
+        <Text size="sm" c="dimmed">入れた魚には、そのあと記録を足せません。加工品はロットから発行します。</Text>
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>やめる</Button>
+          <Button loading={busy} disabled={sel.length === 0 || !name} leftSection={<IconStack2 size={18} />}
+            onClick={() => onSave({ inputs: sel.map((x) => x.id), name, species: item.species })}>{sel.length}件でロットを作る</Button>
+        </Group>
+      </Stack>
+    </Sheet>
+  )
+}
+
+// 加工の歩留まり：自分が加工した元（1尾・水揚げロット・加工ロット）ごとに、入った重さと出した加工品の重さ
+// 出した重さが入った重さを超える記録はサーバーが受け付けない。上限の歩留まり（製品マスタ）を超えたら赤
+function YieldPanel({ items, products, myId }) {
+  const prodOf = Object.fromEntries(products.map((p) => [p.id, p]))
+  const rows = Object.values(items)
+    .map((p) => {
+      const kids = p.children.map((id) => items[id]).filter((k) => k.row.created_by === myId)
+      if (!kids.length) return null
+      const inKg = p.custody.lastKg ?? p.kg
+      const outKg = kids.reduce((n, k) => n + k.kg, 0)
+      const caps = kids.map((k) => prodOf[k.productId]?.yield_max).filter((v) => v != null).map(Number)
+      const cap = caps.length ? Math.max(...caps) : null
+      const ratio = inKg > 0 ? outKg / inKg : 0
+      return { p, inKg, outKg, ratio, cap, at: kids.map((k) => k.info.createdAt).sort()[0], ng: outKg > inKg || (cap != null && ratio > cap) }
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.at < b.at ? 1 : -1))
+  if (!rows.length) return null
+  const tin = rows.reduce((n, r) => n + r.inKg, 0)
+  const tout = rows.reduce((n, r) => n + r.outKg, 0)
+  return (
+    <Card>
+      <Group justify="space-between" mb="sm">
+        <Text fw={700}><IconScale size={18} style={{ verticalAlign: -3 }} /> 加工の歩留まり</Text>
+        <Text size="sm" c="dimmed">計 {tin.toFixed(1)} → {tout.toFixed(1)} kg（{tin > 0 ? Math.round((tout / tin) * 100) : 0}%）</Text>
+      </Group>
+      <div className="inset-list glass">
+        {rows.map((r) => (
+          <div key={r.p.id} className="inset-row" style={{ alignItems: 'center' }}>
+            <div style={{ minWidth: 0 }}>
+              <Text size="sm" fw={600} truncate>{r.p.name}</Text>
+              <Text size="xs" c="dimmed" truncate>{ymd(r.at)} · <span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{r.p.id}</span></Text>
+            </div>
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <Text size="sm">{r.inKg.toFixed(1)} → {r.outKg.toFixed(1)} kg</Text>
+              <Text size="xs" fw={r.ng ? 700 : 500} c={r.ng ? 'red.7' : 'dimmed'}>{Math.round(r.ratio * 100)}%{r.cap != null ? `（上限 ${Math.round(r.cap * 100)}%）` : ''}</Text>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   )
 }
 
@@ -496,6 +630,7 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
               <Text fw={600} size="sm" truncate>{r.name}</Text>
               <Text size="xs" c="dimmed" truncate>{r.kg} kg · <span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{r.id}</span></Text>
             </div>
+            {r.into && <Badge size="sm" color="gray" style={{ flexShrink: 0 }}>ロットへ</Badge>}
             {r.children.length > 0 && <Badge size="sm" color="orange" style={{ flexShrink: 0 }}>加工 {r.children.length}</Badge>}
             <IconChevronRight size={18} color="var(--apple-text-3)" />
           </UnstyledButton>
@@ -652,7 +787,9 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               <Button leftSection={<IconPackageExport size={18} />} variant="light" onClick={() => open('bulk')}>加工品を引き渡す</Button>
             </SimpleGrid>
           )}
-          {isRecipient ? (
+          {it.into ? (
+            <Text size="sm" className="custody-note">加工ロット <Anchor ff="monospace" size="sm" onClick={() => setSel(it.into)}>{it.into}</Anchor> に入れました。加工品はロットから発行します。</Text>
+          ) : isRecipient ? (
             <Button fullWidth size="lg" leftSection={<IconPackageImport size={20} />} onClick={() => open('receive')}>{cu.holderName} から受け取る</Button>
           ) : canAct && it.children.length > 0 ? (
             <Stack gap="xs">
@@ -670,6 +807,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               <Button leftSection={<IconPackageExport size={18} />} onClick={() => open('handover')}>引き渡す（せり・出荷）</Button>
               <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('sell')}>販売を始める</Button>
               <Button leftSection={<IconPlus size={18} />} variant="light" onClick={() => open('add')}>情報を追記</Button>
+              {it.kind === 'ind' && it.unit !== 'mix' && myId && <Button leftSection={<IconStack2 size={18} />} variant="light" onClick={() => open('mix')} style={{ gridColumn: '1 / -1' }}>ほかの魚とまとめて加工ロットにする</Button>}
             </SimpleGrid>
           ) : isHolder ? (
             <Stack gap="xs">
@@ -696,6 +834,8 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
         data={[{ value: 'info', label: '紐づく情報' }, { value: 'log', label: `履歴 ${it.events.length}` }, { value: 'tree', label: '親子関係' }]} />
 
       {tab === 'info' && <DetailChecks items={items} it={it} myBiz={myBiz} from={isRecipient ? { id: cu.holder, name: cu.holderName } : null} />}
+
+      {tab === 'info' && root.unit === 'mix' && <MixInputs items={items} lot={root} setSel={setSel} />}
 
       {tab === 'info' && chainPhotos.length > 0 && (
         <div>
@@ -804,6 +944,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
   // 水揚げの登録は市場だけ（未ログインのときはボタンを押すとログインを求める）
   const canRegister = !me || me.business?.role === 'market'
   const list = <ItemList items={items} currentRoot={it && rootOf(items, it.id).id} onPick={pick} onRegister={canRegister ? () => open('register') : null} onScan={() => setModal('scan')} isMobile={isMobile} inbox={inbox} />
+  const yields = myId ? <YieldPanel items={items} products={db.products} myId={myId} /> : null
   const detail = it
     ? <Detail items={items} it={it} setSel={setSel} busy={busy} open={open} run={run} guard={guard} isMobile={isMobile} onBack={() => setPane('list')} me={me} myBiz={myBiz} onPrint={setPrintJob} />
     : (
@@ -839,10 +980,10 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
       {hero}
       <div className="mgr-overlap">
         {isMobile
-          ? (showDetail ? detail : <Card>{list}</Card>)
+          ? (showDetail ? detail : <Stack gap="lg"><Card>{list}</Card>{yields}</Stack>)
           : (
             <Box style={{ display: 'grid', gridTemplateColumns: '360px minmax(0, 1fr)', gap: 28, alignItems: 'start' }}>
-              <Card style={{ position: 'sticky', top: 88 }}>{list}</Card>
+              <Stack gap="lg"><Card>{list}</Card>{yields}</Stack>
               {detail}
             </Box>
           )}
@@ -868,6 +1009,12 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
           onSave={(f) => run(() => sellMany(f), (r) => notifyRecorded(`加工品 ${f.ids.length}ロットの販売開始を記録しました`, r))} />
         <ReceiveModal key={`r-${it.id}-${modal === 'receive'}`} opened={modal === 'receive'} onClose={() => setModal(null)} item={it} items={items} myBiz={myBiz} busy={busy}
           onSave={(f) => run(() => receiveItem({ itemId: it.id, ...f }), (r) => notifyRecorded('受け取りを記録しました。持ち主があなたに移りました', r))} />
+        <MixModal key={`m-${it.id}-${modal === 'mix'}`} opened={modal === 'mix'} onClose={() => setModal(null)} item={it} items={items} myId={myId} busy={busy}
+          onSave={(f) => run(async () => {
+            const code = SPECIES.find((x) => x.name === f.species)?.code ?? 'FSH'
+            const itemId = await nextLandingId(`KSN-${code}-${ymd(new Date()).replaceAll('-', '').slice(2)}-M`, Object.keys(items))
+            return { ...(await makeProcessLot({ itemId, name: f.name, inputs: f.inputs })), itemId }
+          }, (r) => { pick(r.itemId); notifyRecorded(`加工ロット ${r.itemId} を作りました（${f.inputs.length}件）`, r) })} />
         <SellModal key={`s-${it.id}-${modal === 'sell'}`} opened={modal === 'sell'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(f) => run(() => startSale({ itemId: it.id, ...f }), (r) => notifyRecorded('販売開始を記録しました', r))} />
       </>}
@@ -1188,7 +1335,7 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
   const lotKg = Math.round(q * u * 100) / 100
   const weights = Array.from({ length: n }, () => lotKg)
   const check = checkWeight({
-    parentKg: item.kg, childrenKg: item.children.map((c) => items[c].kg), newKg: weights,
+    parentKg: item.custody.lastKg ?? item.kg, childrenKg: item.children.map((c) => items[c].kg), newKg: weights,
     yieldMin: product?.yield_min != null ? Number(product.yield_min) : null, yieldMax: product?.yield_max != null ? Number(product.yield_max) : null,
   })
   const ids = childIds(item.id, item.kind === 'ind', item.children.length, n)
@@ -1225,7 +1372,7 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
         <Text size="sm" fw={600}>{n}ロット × {q}パック × {gram(u)} ＝ 合計 {check.total.toFixed(1)} kg（1ロット {lotKg} kg）</Text>
         {/* 親の重量に対して、子の合計がどれだけか */}
         <div>
-          <Group justify="space-between" mb={6}><Text size="sm" c="dimmed">合計 {check.total.toFixed(1)} kg ／ 親 {item.kg} kg</Text><Text size="sm" fw={700} c={check.ok ? undefined : 'red'}>{(check.ratio * 100).toFixed(0)}%</Text></Group>
+          <Group justify="space-between" mb={6}><Text size="sm" c="dimmed">合計 {check.total.toFixed(1)} kg ／ 親 {item.custody.lastKg ?? item.kg} kg</Text><Text size="sm" fw={700} c={check.ok ? undefined : 'red'}>{(check.ratio * 100).toFixed(0)}%</Text></Group>
           <Box h={10} style={{ borderRadius: 99, background: 'rgba(0,0,0,0.06)', overflow: 'hidden' }}>
             <Box h="100%" w={`${pct}%`} style={{ borderRadius: 99, background: check.ok ? 'linear-gradient(90deg, #0a84ff, #64d2ff)' : 'var(--apple-red)', transition: 'width 250ms var(--ease-apple)' }} />
           </Box>
