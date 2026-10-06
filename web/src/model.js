@@ -20,11 +20,14 @@ export function buildItems({ items, events, ships, products, businesses }) {
     // 発行したときの写し（あれば、マスタの今の値ではなくこちらを表示する）
     const snap = evs.find((e) => e.payload?.item)?.payload.item ?? null
     let attrs
-    if (r.kind === 'individual') {
+    const lot = r.kind === 'catch_lot'
+    const grade = landing?.payload?.grade ?? null
+    if (r.kind === 'individual' || lot) {
       const s = snap?.ship ?? ship[r.ship_id] ?? {}
-      attrs = [['魚種', r.species], ['漁船', s.name ?? '—'], ['漁船登録番号', s.reg_no ?? '—'], ['漁業許可番号', s.permit_no ?? '—'], ['漁法', s.gear ?? '—'],
+      attrs = [['魚種', r.species], ...(lot ? [['銘柄（サイズ）', grade ?? '—'], ['尾数', `約 ${r.quantity} 尾`]] : []),
+        ['漁船', s.name ?? '—'], ['漁船登録番号', s.reg_no ?? '—'], ['漁業許可番号', s.permit_no ?? '—'], ['漁法', s.gear ?? '—'],
         ['漁獲海域', r.catch_area ?? '—'], ['漁獲期間', landing?.payload?.period || '—'], ['水揚げ港', r.landing_port ?? '—'],
-        ['水揚げ日', r.landed_at ? ymd(r.landed_at) : '—'], ['重量（水揚げ時）', `${r.weight_kg} kg`]]
+        ['水揚げ日', r.landed_at ? ymd(r.landed_at) : '—'], [lot ? '重量（水揚げ時の合計）' : '重量（水揚げ時）', `${r.weight_kg} kg`]]
     } else {
       const p = snap?.product ?? prod[r.product_id]
       const made = ymd(r.created_at)
@@ -33,8 +36,10 @@ export function buildItems({ items, events, ships, products, businesses }) {
       if (p?.storage) attrs.push(['保存方法', p.storage])
       if (p?.shelf_days != null) attrs.push([p.shelf_days > 5 ? '賞味期限' : '消費期限', addDays(r.created_at, p.shelf_days)])
     }
+    // kind：'ind'＝水揚げの単位（元）、'prod'＝加工品。水揚げの単位は unit で分ける（'fish'＝1尾、'lot'＝水揚げロット）
     out[r.id] = {
-      id: r.id, parent: r.parent_id, kind: r.kind === 'individual' ? 'ind' : 'prod', name: r.name, kg: Number(r.weight_kg),
+      id: r.id, parent: r.parent_id, kind: r.kind === 'product' ? 'prod' : 'ind', unit: lot ? 'lot' : r.kind === 'individual' ? 'fish' : null,
+      grade, count: lot ? r.quantity : r.kind === 'individual' ? 1 : null, name: r.name, kg: Number(r.weight_kg),
       species: r.species, productId: r.product_id, qr: r.qr_status, attrs, children: [], rawEvents: evs, row: r, snap,
       qty: r.quantity ?? 1, unitKg: r.unit_kg != null ? Number(r.unit_kg) : null,
       photos: evs.filter((e) => e.payload?.photo?.path).map((e) => ({ id: e.id, url: photoUrl(e.payload.photo.path), type: e.type, at: e.created_at })),

@@ -94,7 +94,7 @@ function HeroPhoto({ main, sub, root, it, verify, t, lang }) {
     <motion.figure className="hero-photo" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.9, ease, delay: 0.15 }}>
       <img src={main.url} alt={t.photoAlt(term(lang, root.species))} />
       <figcaption>
-        <span>{isRootPhoto ? t.photoRoot : term(lang, it.name)} · {ymd(main.at)}</span>
+        <span>{isRootPhoto ? (root.unit === 'lot' ? t.photoRootLot : t.photoRoot) : term(lang, it.name)} · {ymd(main.at)}</span>
         {verify?.ok && verify.photoCount > 0 && <span className="photo-ok">{t.photoOk}</span>}
       </figcaption>
       {sub && (
@@ -215,9 +215,9 @@ function Family({ items, it, t, lang }) {
   return (
     <section className="story-section">
       <motion.div {...reveal}>
-        <div className="eyebrow-dark">ONE FISH, MANY TABLES</div>
+        <div className="eyebrow-dark">{parent.unit === 'lot' ? 'ONE CATCH, MANY TABLES' : 'ONE FISH, MANY TABLES'}</div>
         <h2 className="story-h2">{t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, term(lang, parent.name), kids.length)}</h2>
-        <p className="story-lead">{t.familyLead}</p>
+        <p className="story-lead">{parent.unit === 'lot' ? t.familyLeadLot : t.familyLead}</p>
       </motion.div>
       <motion.div className="weight-bar" {...reveal} transition={{ ...reveal.transition, delay: 0.15 }}>
         {kids.map((k, i) => (
@@ -361,12 +361,14 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
         <div className={heroPhoto ? 'hero-grid' : undefined}>
         {heroPhoto && <HeroPhoto main={heroPhoto} sub={ownPhoto} root={root} it={it} verify={verify} t={t} lang={lang} />}
         <div className="hero-text">
-        <motion.div className="eyebrow-dark" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease }}>{t.eyebrow}</motion.div>
+        <motion.div className="eyebrow-dark" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease }}>{root.unit === 'lot' ? t.eyebrowLot : t.eyebrow}</motion.div>
         <motion.h1 className="story-h1" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, ease, delay: 0.1 }}>{tr(it.name)}</motion.h1>
         <motion.p className="story-meta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.25 }}>
           {it.qty > 1 && it.unitKg
             ? <>{pack && pack <= it.qty ? t.packNo(pack, it.qty) : t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, tr(root.info.shipName), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
             : t.meta(it.kg, tr(root.info.shipName), tr(root.species), it.kind === 'prod')}
+          {/* 水揚げロット：1尾ではなく「どの船が、いつ、どのくらい揚げたまとまりか」を出す */}
+          {root.unit === 'lot' && <><br />{t.fromLot(root.info.landedAt ? new Date(root.info.landedAt).toLocaleDateString(lang === 'en' ? 'en-US' : 'ja-JP', { timeZone: 'Asia/Tokyo', month: lang === 'en' ? 'short' : 'numeric', day: 'numeric' }) : '', tr(root.info.shipName), tr(root.species), tr(root.grade), root.count, root.kg)}</>}
         </motion.p>
         <Seal verify={verify} t={t} />
         <div className="hero-stats">

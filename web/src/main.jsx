@@ -21,7 +21,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
-  registerIndividual, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextIndividualId,
+  registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
 import { compressImage } from './lib/photo.js'
@@ -55,7 +55,7 @@ const theme = createTheme({
 
 const EVENT_TYPES = {
   catch: { label: '漁獲', icon: IconSailboat },
-  landing: { label: '水揚げ・個体ID発行', icon: IconAnchor },
+  landing: { label: '水揚げ・ID発行', icon: IconAnchor },
   auction: { label: 'せり結果', icon: IconGavel },
   storage: { label: '冷凍・保管', icon: IconSnowflake },
   process: { label: '加工（子IDを発行）', icon: IconCut },
@@ -66,7 +66,22 @@ const EVENT_TYPES = {
   receive: { label: '受け取り', icon: IconPackageImport },
   sell: { label: '販売開始', icon: IconBuildingStore },
 }
-const SPECIES_CODES = { 'メカジキ': 'SWO', 'ヨシキリザメ': 'SHK', 'メバチ': 'BET' }
+// 魚種：コードは ID に入る（FAO の3文字コード。ヨシキリザメだけ以前の SHK のまま）
+// lot＝false は1尾ずつ管理（マグロ系）、true は水揚げロット（船 × 水揚げ日 × 魚種 × 銘柄のまとまり）で管理
+// kg・count は登録画面の最初の値（見本）
+const SPECIES = [
+  { name: 'クロマグロ', code: 'PBF', lot: false, kg: 180 },
+  { name: 'ミナミマグロ', code: 'SBF', lot: false, kg: 60 },
+  { name: 'カツオ', code: 'SKJ', lot: true, kg: 1500, count: 450 },
+  { name: 'メバチ', code: 'BET', lot: true, kg: 600, count: 15 },
+  { name: 'メカジキ', code: 'SWO', lot: true, kg: 600, count: 8 },
+  { name: 'ヨシキリザメ', code: 'SHK', lot: true, kg: 400, count: 20 },
+]
+const GRADES = ['大', '中', '小', '区分なし']
+// 「個体」「水揚げロット」「加工品」の呼び名
+const unitWord = (it) => (it.kind === 'prod' ? '加工品' : it.unit === 'lot' ? '水揚げロット' : '個体')
+// 重さの入力の刻み：水揚げロット（数百kg〜）・1尾（数十kg〜）・加工品（kg 未満〜）
+const kgInput = (it) => (it.kind === 'prod' ? { steps: [0.1, 1], decimals: 2 } : it.unit === 'lot' ? { steps: [10, 100], decimals: 1 } : { steps: [1, 10], decimals: 1 })
 const AREAS = ['北西太平洋（FAO 61）', '三陸沖']
 const MOBILE = '(max-width: 47.99em)'
 
@@ -104,8 +119,8 @@ function KindIcon({ kind, size = 36 }) {
   )
 }
 
-function KindBadge({ kind }) {
-  return kind === 'ind' ? <Badge color="apple">個体</Badge> : <Badge color="orange">加工品</Badge>
+function KindBadge({ it }) {
+  return <Badge color={it.kind === 'ind' ? 'apple' : 'orange'}>{unitWord(it)}</Badge>
 }
 
 function VerifyBadge({ item, variant = 'light' }) {
@@ -121,7 +136,10 @@ const gram = (kg) => (kg >= 1 ? `${kg}kg` : `${Math.round(kg * 1000)}g`)
 const lotLabel = (it) => (it.qty > 1 && it.unitKg ? `${gram(it.unitKg)} × ${it.qty}パック` : '')
 
 // 魚種ごとの色（一覧のアイコンや詳細の帯に使う）
-const SPECIES_COLORS = { 'メカジキ': ['#0a84ff', '#64d2ff'], 'ヨシキリザメ': ['#5e5ce6', '#64d2ff'], 'メバチ': ['#ff375f', '#ff9f0a'] }
+const SPECIES_COLORS = {
+  'クロマグロ': ['#bf1e2d', '#ff375f'], 'ミナミマグロ': ['#af52de', '#ff375f'], 'カツオ': ['#1d3c78', '#0a84ff'],
+  'メカジキ': ['#0a84ff', '#64d2ff'], 'ヨシキリザメ': ['#5e5ce6', '#64d2ff'], 'メバチ': ['#ff375f', '#ff9f0a'],
+}
 const PRODUCT_GRAD = 'linear-gradient(135deg, #ff9f0a, #ffcc00)'
 const itemGrad = (it) => {
   if (it.kind === 'prod') return PRODUCT_GRAD
@@ -191,8 +209,8 @@ function Overview({ items, dark = false }) {
   const roots = all.filter((x) => !x.parent)
   const today = ymd(new Date())
   const stats = [
-    { label: '今日の水揚げ', value: roots.filter((r) => r.info.landedAt && ymd(r.info.landedAt) === today).length, unit: '尾', icon: IconAnchor, color: '#0a84ff' },
-    { label: '登録した個体', value: roots.length, unit: '尾', icon: IconFish, color: '#5e5ce6' },
+    { label: '今日の水揚げ', value: roots.filter((r) => r.info.landedAt && ymd(r.info.landedAt) === today).length, unit: '件', icon: IconAnchor, color: '#0a84ff' },
+    { label: '水揚げの記録', value: roots.length, unit: '件', icon: IconFish, color: '#5e5ce6' },
     { label: '加工品', value: all.length - roots.length, unit: '件', icon: IconPackage, color: '#ff9f0a' },
     { label: '販売中', value: all.filter((x) => x.sold).length, unit: '件', icon: IconBuildingStore, color: '#30d158' },
   ]
@@ -347,7 +365,7 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-end">
-        <Title order={2} className="headline" fz={isMobile ? 26 : 22}>個体一覧</Title>
+        <Title order={2} className="headline" fz={isMobile ? 26 : 22}>水揚げ一覧</Title>
         {!isMobile && <ActionIcon variant="light" radius="xl" size="lg" onClick={onScan} aria-label="QRを読んで開く"><IconQrcode size={20} /></ActionIcon>}
       </Group>
       {inbox.length > 0 && (
@@ -379,9 +397,9 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
             <IconChevronRight size={18} color="var(--apple-text-3)" />
           </UnstyledButton>
         ))}
-        {roots.length === 0 && <Text size="sm" c="dimmed" p="md">{q ? '見つかりませんでした' : 'まだ個体がありません'}</Text>}
+        {roots.length === 0 && <Text size="sm" c="dimmed" p="md">{q ? '見つかりませんでした' : 'まだ水揚げの記録がありません'}</Text>}
       </div>
-      {!isMobile && onRegister && <Button leftSection={<IconPlus size={18} />} onClick={onRegister}>水揚げした個体を登録</Button>}
+      {!isMobile && onRegister && <Button leftSection={<IconPlus size={18} />} onClick={onRegister}>水揚げを登録</Button>}
     </Stack>
   )
 }
@@ -478,7 +496,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
   return (
     <Stack gap="lg" className="fadein" key={it.id}>
       {isMobile && (
-        <Anchor component="button" onClick={onBack} c="white" fw={500}><Group gap={2}><IconChevronLeft size={20} />個体一覧</Group></Anchor>
+        <Anchor component="button" onClick={onBack} c="white" fw={500}><Group gap={2}><IconChevronLeft size={20} />水揚げ一覧</Group></Anchor>
       )}
       <Card padding={0} style={{ overflow: 'hidden' }}>
         <div className="detail-band" style={{ background: bandPhoto ? `linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.6)), url("${bandPhoto.url}") center / cover` : itemGrad(it) }}>
@@ -495,7 +513,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
                   ))}
                 </Group>
               )}
-              <Group gap={6}><Badge variant="white" color="dark">{it.kind === 'ind' ? '個体' : '加工品'}</Badge><VerifyBadge item={it} variant="white" /></Group>
+              <Group gap={6}><Badge variant="white" color="dark">{unitWord(it)}</Badge><VerifyBadge item={it} variant="white" /></Group>
               <div>
                 <Title order={1} className="headline" c="white" fz={isMobile ? 28 : 36}>{it.name}</Title>
                 <Text c="rgba(255,255,255,0.88)" size="lg" fw={500}>{it.kg} kg{lotLabel(it) && `（${lotLabel(it)}）`}</Text>
@@ -509,7 +527,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           <Stages it={it} />
           {it.parent && <Text size="sm" c="dimmed" mb="sm">親ID <Anchor ff="monospace" size="sm" onClick={() => setSel(it.parent)}>{it.parent}</Anchor></Text>}
           <div className="custody-bar">
-            <Text size="sm"><Text span c="dimmed">{it.children.length ? '元の1尾の持ち主 ' : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
+            <Text size="sm"><Text span c="dimmed">{it.children.length ? '加工前の持ち主 ' : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
             {kidsWhere.length > 0 && (
               <Text size="sm" className="custody-kids">
                 <Text span c="dimmed">加工品 {it.children.length}ロット：</Text>
@@ -576,7 +594,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
 
       {tab === 'info' && chainPhotos.length > 0 && (
         <div>
-          <Text className="section-label">写真（元の1尾から引き継ぎ）</Text>
+          <Text className="section-label">写真（水揚げ時から引き継ぎ）</Text>
           <div className="photo-strip">
             {chainPhotos.map((p) => (
               <a key={p.id} href={p.url} target="_blank" rel="noreferrer" className="photo-thumb">
@@ -591,13 +609,13 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
       {tab === 'info' && (
         <SimpleGrid cols={{ base: 1, md: it.kind === 'prod' ? 2 : 1 }} spacing="lg">
           <div>
-            <Text className="section-label">{it.kind === 'ind' ? 'この個体の情報' : 'この加工品の情報'}</Text>
+            <Text className="section-label">{`この${unitWord(it)}の情報`}</Text>
             <InfoList rows={it.attrs} />
           </div>
           {it.kind === 'prod' && (
             <div>
-              <Text className="section-label">元の個体から自動で引き継ぐ情報</Text>
-              <InfoList rows={[['元の個体ID', <Anchor key="r" ff="monospace" size="sm" onClick={() => setSel(root.id)}>{root.id}</Anchor>], ...root.attrs.filter(([k]) => !k.startsWith('重量'))]} />
+              <Text className="section-label">元の{unitWord(root)}から自動で引き継ぐ情報</Text>
+              <InfoList rows={[[`元の${unitWord(root)}のID`, <Anchor key="r" ff="monospace" size="sm" onClick={() => setSel(root.id)}>{root.id}</Anchor>], ...root.attrs.filter(([k]) => !k.startsWith('重量'))]} />
             </div>
           )}
         </SimpleGrid>
@@ -631,7 +649,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
 
       {tab === 'tree' && (
         <div>
-          <Text className="section-label">元の個体から、加工でどう分かれたか。押すとその記録を開きます</Text>
+          <Text className="section-label">元の{unitWord(root)}から、加工でどう分かれたか。押すとその記録を開きます</Text>
           <div className="inset-list glass"><TreeNode items={items} id={root.id} current={it.id} onPick={setSel} /></div>
         </div>
       )}
@@ -683,8 +701,8 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
     : (
       <Card><Center mih={260}><Stack align="center" gap="xs">
         <KindIcon kind="ind" size={56} />
-        <Text fw={600} mt="xs">まだ個体がありません</Text>
-        <Text size="sm" c="dimmed">「水揚げした個体を登録」から始めてください</Text>
+        <Text fw={600} mt="xs">まだ水揚げの記録がありません</Text>
+        <Text size="sm" c="dimmed">「水揚げを登録」から始めてください</Text>
       </Stack></Center></Card>
     )
 
@@ -723,7 +741,7 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
       </div>
 
       <RegisterModal opened={modal === 'register'} onClose={() => setModal(null)} busy={busy} items={items} ships={db.ships}
-        onSave={(f) => run(() => registerIndividual(f), (r) => { pick(f.itemId); notifyRecorded(`個体IDを発行しました：${f.itemId}`, r) })} />
+        onSave={(f) => run(() => registerLanding(f), (r) => { pick(f.itemId); notifyRecorded(`${f.lot ? '水揚げロット' : '個体'}のIDを発行しました：${f.itemId}`, r) })} />
       {it && <>
         <AddInfoModal opened={modal === 'add'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(type, detail, photo) => run(() => appendEvent(it.id, type, detail, photo), (r) => notifyRecorded('追記しました', r))} />
@@ -788,7 +806,7 @@ function HandoverModal({ opened, onClose, item, businesses, myId, myRole, busy, 
             ))}
           </Stack>
         </div>
-        <BigNumber label="渡すときの重さ" value={kg} onChange={setKg} unit="kg" steps={item.kind === 'ind' ? [1, 10] : [0.1, 1]} min={0.1} decimals={item.kind === 'ind' ? 1 : 2} />
+        <BigNumber label="渡すときの重さ" value={kg} onChange={setKg} unit="kg" steps={kgInput(item).steps} min={0.1} decimals={kgInput(item).decimals} />
         <TextInput label="メモ（任意）" placeholder="例：買受番号 052、冷凍車で配送" value={detail} onChange={(e) => setDetail(e.currentTarget.value)} />
         <Text size="sm" c="dimmed">相手が受け取ると、持ち主が相手に移ります。受け取られるまで、この魚は加工・販売できません。</Text>
         <Group justify="flex-end">
@@ -980,7 +998,7 @@ function ReceiveModal({ opened, onClose, item, busy, onSave }) {
             <Text size="xs" c="dimmed">{item.custody.holderName} から · 渡したときの重さ {item.custody.lastKg} kg</Text>
           </div>
         </Group>
-        <BigNumber label="受け取った重さ（量って入れる）" value={kg} onChange={setKg} unit="kg" steps={item.kind === 'ind' ? [1, 10] : [0.1, 1]} min={0.1} decimals={item.kind === 'ind' ? 1 : 2} />
+        <BigNumber label="受け取った重さ（量って入れる）" value={kg} onChange={setKg} unit="kg" steps={kgInput(item).steps} min={0.1} decimals={kgInput(item).decimals} />
         {d && d.level !== 'ok' && (
           <Alert radius="md" color={d.level === 'gain' ? 'red' : 'yellow'} variant="light" icon={<IconAlertTriangle size={18} />}>
             {d.level === 'gain' ? `渡したときより ${(d.ratio * 100).toFixed(1)}% 重くなっています。別の魚が混ざっていないか確かめてください` : `渡したときより ${(-d.ratio * 100).toFixed(1)}% 軽くなっています。想定より大きく減っています`}（記録はできます）
@@ -1100,10 +1118,10 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
         {check.issues.map((i) => (
           <Alert key={i.message} radius="md" color={i.level === 'error' ? 'red' : i.level === 'warning' ? 'yellow' : 'apple'} variant="light" icon={<IconAlertTriangle size={18} />}>{i.message}</Alert>
         ))}
-        <PhotoPicker value={photo} onChange={setPhoto} label="加工品の写真" hint="撮らなくても、元の1尾の写真が消費者の画面に出ます" />
+        <PhotoPicker value={photo} onChange={setPhoto} label="加工品の写真" hint="撮らなくても、水揚げ時の写真が消費者の画面に出ます" />
         <Checkbox checked={printAfter} onChange={(e) => setPrintAfter(e.currentTarget.checked)} size="md"
           label={`発行したらラベルを印刷する（${n}ロット × ${q}パック ＝ ${n * q}枚）`} />
-        <Text size="sm" c="dimmed">ロットごとに子ID（{ids[0]} …）を発行し、すべてに親IDを持たせます。パックのQRは「ロットのID＋連番」で、どのパックからも元の1尾までたどれます。魚種・漁船・海域などは親から自動で引き継ぎます。</Text>
+        <Text size="sm" c="dimmed">ロットごとに子ID（{ids[0]} …）を発行し、すべてに親IDを持たせます。パックのQRは「ロットのID＋連番」で、どのパックからも元の水揚げ（1尾、または水揚げロット）までたどれます。魚種・漁船・海域などは親から自動で引き継ぎます。</Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button leftSection={<IconCut size={18} />} loading={busy} disabled={!check.ok || n < 1 || !name || !(u > 0)}
@@ -1116,15 +1134,19 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
 
 function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   const [shipId, setShipId] = useState(null)
-  const [species, setSpecies] = useState('メカジキ')
+  const [species, setSpecies] = useState(SPECIES[0].name)
   const [area, setArea] = useState(AREAS[0])
   const [period, setPeriod] = useState('')
-  const [kg, setKg] = useState(110)
+  const [kg, setKg] = useState(SPECIES[0].kg)
+  const [count, setCount] = useState(1)
+  const [grade, setGrade] = useState(GRADES[1])
   const [photo, setPhoto] = useState(null)
+  const sp = SPECIES.find((x) => x.name === species)
+  const pickSpecies = (x) => { setSpecies(x.name); setKg(x.kg); setCount(x.count ?? 1) }
   const ship = ships.find((s) => s.id === (shipId ?? ships[0]?.id))
-  // ID：KSN-魚種コード-水揚げ日(YYMMDD)-連番
+  // ID：KSN-魚種コード-水揚げ日(YYMMDD)-連番（1尾ずつも水揚げロットも同じ形）
   const today = new Date().toISOString()
-  const prefix = `KSN-${SPECIES_CODES[species]}-${ymd(today).replaceAll('-', '').slice(2)}-`
+  const prefix = `KSN-${sp.code}-${ymd(today).replaceAll('-', '').slice(2)}-`
   // 連番は空いているものを探す（チェーンにすでにあるIDも飛ばす）。チェーンに聞けないときは DB だけで決める
   const known = Object.keys(items).filter((id) => id.startsWith(prefix)).sort().join(' ')
   const [itemId, setItemId] = useState(null)
@@ -1133,27 +1155,33 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
     let alive = true
     const ids = known ? known.split(' ') : []
     setItemId(null)
-    nextIndividualId(prefix, ids)
+    nextLandingId(prefix, ids)
       .catch(() => { let seq = 1; while (ids.includes(prefix + String(seq).padStart(3, '0'))) seq++; return prefix + String(seq).padStart(3, '0') })
       .then((id) => alive && setItemId(id))
     return () => { alive = false }
   }, [opened, prefix, known])
+  const speciesCards = (lot) => (
+    <SimpleGrid cols={{ base: 2, xs: lot ? 4 : 2 }} spacing="sm">
+      {SPECIES.filter((x) => x.lot === lot).map((x) => (
+        <ChoiceCard key={x.name} checked={species === x.name} onClick={() => pickSpecies(x)}>
+          <Stack align="center" gap={6}>
+            <ItemAvatar it={{ kind: 'ind', species: x.name }} size={40} />
+            <Text fw={600} fz={13} style={{ whiteSpace: 'nowrap' }}>{x.name}</Text>
+            <Text size="xs" c="dimmed" ff="monospace">{x.code}</Text>
+          </Stack>
+        </ChoiceCard>
+      ))}
+    </SimpleGrid>
+  )
   return (
-    <Sheet opened={opened} onClose={onClose} title="水揚げした個体を登録">
+    <Sheet opened={opened} onClose={onClose} title="水揚げを登録">
       <Stack gap="lg">
         <div>
           <Text className="field-label">魚種</Text>
-          <SimpleGrid cols={3} spacing="sm">
-            {Object.entries(SPECIES_CODES).map(([sp, code]) => (
-              <ChoiceCard key={sp} checked={species === sp} onClick={() => setSpecies(sp)}>
-                <Stack align="center" gap={6}>
-                  <ItemAvatar it={{ kind: 'ind', species: sp }} size={44} />
-                  <Text fw={600} fz={13} style={{ whiteSpace: 'nowrap' }}>{sp}</Text>
-                  <Text size="xs" c="dimmed" ff="monospace">{code}</Text>
-                </Stack>
-              </ChoiceCard>
-            ))}
-          </SimpleGrid>
+          <Text size="xs" c="dimmed" mb={6}>1尾ずつ管理する魚（マグロ）</Text>
+          {speciesCards(false)}
+          <Text size="xs" c="dimmed" mt="sm" mb={6}>まとめて管理する魚（船・水揚げ日・銘柄ごとに1つのID）</Text>
+          {speciesCards(true)}
         </div>
         <div>
           <Text className="field-label">漁船</Text>
@@ -1176,17 +1204,28 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
           <Text className="field-label">漁獲海域</Text>
           <SegmentedControl fullWidth data={AREAS} value={area} onChange={setArea} />
         </div>
-        <BigNumber label="重量" value={kg} onChange={setKg} unit="kg" steps={[1, 10]} min={0.1} />
+        {sp.lot && (
+          <div>
+            <Text className="field-label">銘柄（サイズの区分）</Text>
+            <SegmentedControl fullWidth data={GRADES} value={grade} onChange={setGrade} />
+            <Text size="xs" c="dimmed" mt={6}>せりは船と銘柄ごとに行われるので、銘柄ごとに1つのIDにします（1つのまとまりは1社が買う）</Text>
+          </div>
+        )}
+        {sp.lot && <BigNumber label="尾数（おおよそ）" value={count} onChange={setCount} unit="尾" steps={[1, 10]} min={1} decimals={0} />}
+        <BigNumber label={sp.lot ? '重量（合計）' : '重量'} value={kg} onChange={setKg} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
         <TextInput label="漁獲期間" placeholder="例：9/20〜10/1" value={period} onChange={(e) => setPeriod(e.currentTarget.value)}
           styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
-        <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真" hint="消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます" />
+        <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真"
+          hint={sp.lot ? '消費者の画面に「水揚げ時の様子」として大きく出ます。加工品にも引き継がれます' : '消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます'} />
         {itemId
-          ? <LabelPreview itemId={itemId} species={species} kg={kg} shipName={ship?.name} />
+          ? <LabelPreview itemId={itemId} species={sp.lot ? `${species}（${grade}・約${Number(count) || 0}尾）` : species} kg={kg} shipName={ship?.name} />
           : <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">番号を確かめています…</Text></Group>}
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
-          <Button loading={busy} disabled={!ship || !itemId || !(Number(kg) > 0)} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, weightKg: Number(kg), shipId: ship.id, catchArea: area, period, landedAt: today, photo })}>個体IDを発行</Button>
+          <Button loading={busy} disabled={!ship || !itemId || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
+            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, period, landedAt: today, photo })}>
+            {sp.lot ? '水揚げロットのIDを発行' : '個体IDを発行'}
+          </Button>
         </Group>
       </Stack>
     </Sheet>
@@ -1442,7 +1481,7 @@ function App() {
           onList={() => { setView('manage'); setPane('list') }}
           onRegister={() => {
             setView('manage')
-            if (me?.business && me.business.role !== 'market') return notifications.show({ color: 'yellow', message: '水揚げの登録（個体IDの発行）は市場だけができます' })
+            if (me?.business && me.business.role !== 'market') return notifications.show({ color: 'yellow', message: '水揚げの登録は市場だけができます' })
             guard(() => setModal('register'))
           }}
           onScan={() => { setView('manage'); setModal('scan') }}

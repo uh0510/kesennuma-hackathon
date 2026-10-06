@@ -45,10 +45,11 @@ create table products (
   yield_max   numeric(4,3)              -- 例 0.700
 );
 
--- 個体・加工品
+-- 個体・水揚げロット・加工品
+-- individual＝1尾ずつ管理する魚（マグロ系）、catch_lot＝船 × 水揚げ日 × 魚種 × 銘柄のまとまり（カツオ・メバチなど。quantity は尾数）
 create table items (
-  id          text primary key,         -- KSN-SWO-261002-001 / -P01 / -P01-K01
-  kind        text not null check (kind in ('individual','product')),
+  id          text primary key,         -- KSN-PBF-261006-001 / -P01 / -P01-K01
+  kind        text not null constraint items_kind_check check (kind in ('individual','catch_lot','product')),
   parent_id   text references items(id),
   species     text not null,
   name        text not null,
@@ -59,11 +60,12 @@ create table items (
   landed_at   timestamptz,                      -- 個体のみ
   landing_port text default '気仙沼港',
   qr_status   text not null default 'issued' check (qr_status in ('issued','active')),
-  quantity    int not null default 1 check (quantity > 0),          -- ロットのパック数（個体は 1）
+  quantity    int not null default 1 check (quantity > 0),          -- 加工品はロットのパック数、水揚げロットは尾数（おおよそ）、個体は 1
   unit_kg     numeric(10,3) check (unit_kg is null or unit_kg > 0), -- 1パックの重さ（weight_kg はロットの総重量）
   created_by  uuid not null references businesses(id),
   created_at  timestamptz not null default now(),
-  check ((kind = 'individual' and parent_id is null) or (kind = 'product' and parent_id is not null))
+  constraint items_kind_parent_check
+    check ((kind in ('individual','catch_lot') and parent_id is null) or (kind = 'product' and parent_id is not null))
 );
 create index on items(parent_id);
 

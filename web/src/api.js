@@ -95,9 +95,9 @@ async function recordEvent(body) {
   return { ...data, locationError: needLocation && !location ? positionError() : null }
 }
 
-// 水揚げの個体ID：prefix（KSN-魚種-日付-）に続く空いている連番。DB にあるIDに加えて、チェーンにすでにあるIDも飛ばす
+// 水揚げのID（個体・水揚げロット）：prefix（KSN-魚種-日付-）に続く空いている連番。DB にあるIDに加えて、チェーンにすでにあるIDも飛ばす
 // （デモ前に DB を消しても、チェーンの記録は残る。同じIDを使うとチェーンの指紋と合わず「改ざんの疑い」になるため）
-export async function nextIndividualId(prefix, knownIds) {
+export async function nextLandingId(prefix, knownIds) {
   const candidates = []
   for (let seq = 1; candidates.length < 20; seq++) {
     const id = prefix + String(seq).padStart(3, '0')
@@ -108,12 +108,15 @@ export async function nextIndividualId(prefix, knownIds) {
   return candidates.find((_, i) => !used[i]) ?? candidates.at(-1)
 }
 
-// 水揚げした個体を登録（個体IDを発行し、landing を記録）
-export function registerIndividual({ itemId, species, weightKg, shipId, catchArea, period, landedAt, photo }) {
+// 水揚げを登録（IDを発行し、landing を記録）
+// lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, period, landedAt, photo }) {
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
-    newItem: { kind: 'individual', species, name: species, weight_kg: weightKg, ship_id: shipId, catch_area: catchArea, landed_at: landedAt },
-    payload: { detail: `個体タグ取付・重量 ${weightKg}kg`, period, weight_kg: weightKg },
+    newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landed_at: landedAt },
+    payload: lot
+      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, weight_kg: weightKg }
+      : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, weight_kg: weightKg },
   })
 }
 

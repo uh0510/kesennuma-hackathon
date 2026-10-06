@@ -5,15 +5,20 @@ import { useEffect, useState } from 'react'
 export const TERMS = {
   // 魚種
   'メカジキ': 'Swordfish', 'ヨシキリザメ': 'Blue shark', 'メバチ': 'Bigeye tuna', 'キハダ': 'Yellowfin tuna', 'クロマグロ': 'Pacific bluefin tuna',
+  'ミナミマグロ': 'Southern bluefin tuna', 'カツオ': 'Skipjack tuna',
+  // 銘柄（サイズの区分）
+  '大': 'Large', '中': 'Medium', '小': 'Small', '区分なし': 'Ungraded',
   // 海域・港
   '北西太平洋（FAO 61）': 'Northwest Pacific (FAO 61)', '三陸沖': 'Off Sanriku', '気仙沼港': 'Kesennuma Port',
   // 漁法・保存方法
-  'はえ縄': 'Longline', '−18℃以下': '−18°C or below', '4℃以下': '4°C or below',
+  'はえ縄': 'Longline', '一本釣り': 'Pole and line', '−18℃以下': '−18°C or below', '4℃以下': '4°C or below',
   // 製品
   'メカジキ ロイン（冷凍）': 'Swordfish loin (frozen)', 'メカジキ 切り身パック': 'Swordfish fillet pack',
   'サメ ヒレ（乾燥前）': 'Shark fin (undried)', 'サメ 肉（冷凍）': 'Shark meat (frozen)', 'サメ 皮': 'Shark skin',
+  'クロマグロ 柵（冷凍）': 'Bluefin tuna block (frozen)', 'メバチ 柵（生）': 'Bigeye tuna block (fresh)',
+  'カツオ たたき（冷凍）': 'Seared skipjack (frozen)', 'カツオ 刺身用ロイン（生）': 'Skipjack loin for sashimi (fresh)',
   // 漁船・事業者（サンプルの名前。本番ではマスタに英語名の欄を持たせる）
-  '第八 海鳴丸': 'Kainari Maru No. 8', '第五 浜風丸': 'Hamakaze Maru No. 5',
+  '第八 海鳴丸': 'Kainari Maru No. 8', '第五 浜風丸': 'Hamakaze Maru No. 5', '第十八 潮丸': 'Ushio Maru No. 18',
   '気仙沼市魚市場（サンプル）': 'Kesennuma City Fish Market (sample)', 'サンプル加工': 'Sample Processing Co.', 'サンプル小売': 'Sample Retail',
 }
 
@@ -22,13 +27,14 @@ export const term = (lang, s) => (lang === 'en' && s && TERMS[s]) || s
 
 export const STR = {
   ja: {
-    eyebrow: 'GYOSEKI · この1尾の戸籍',
+    eyebrow: 'GYOSEKI · この1尾の戸籍', eyebrowLot: 'GYOSEKI · この魚の戸籍',
+    fromLot: (day, ship, species, grade, count, kg) => `${day} に${ship ?? ''}が水揚げした${species}（${grade ?? '区分なし'}）約 ${count} 尾・${kg} kg のまとまりから`,
     tagline: '獲れた海から食卓まで、1尾ごとの戸籍',
     meta: (kg, ship, species, fromProduct) => `${kg} kg${ship ? ` ・ ${ship} が獲った${species}${fromProduct ? 'から' : ''}` : ''}`,
     sealWait: '記録を照合しています', sealOk: '記録は書き換えられていません', sealNg: '記録が一致しません',
     sealWaitSub: '少しお待ちください', sealOkSub: (n) => `${n}件の記録をすべて確かめました`, sealNgSub: '記録の一部が書き換えられた可能性があります',
     statKm: '獲れた海からの道のり', daysUnit: () => ' 日', statDays: '水揚げから', recordsUnit: ' 件', statRecords: 'ここまでの記録',
-    photoRoot: '水揚げ時の、この魚の元の姿', photoOk: '写真も記録と一致', photoProcessed: '加工後',
+    photoRoot: '水揚げ時の、この魚の元の姿', photoRootLot: '水揚げ時の様子', photoOk: '写真も記録と一致', photoProcessed: '加工後',
     photoAlt: (species) => `${species}の水揚げ時の写真`, photoAltOwn: (name) => `${name}の写真`,
     mapTitle: '海から、気仙沼へ。', mapNote: '海域は代表地点です。地図 © OpenFreeMap / OpenStreetMap', mapFallback: 'この端末では地図を表示できませんでした',
     pinCatch: '漁獲', pinApprox: '（代表地点）', unknownArea: '海域不明', pinLanded: '水揚げ', pinLandedProcessed: '水揚げ・加工',
@@ -40,6 +46,7 @@ export const STR = {
     storage: (s) => `保存 ${s}`, bestBefore: '賞味期限', useBy: '消費期限', keepAt: (s) => `${s}で保存してください`,
     familyTitle: (kg, name, n) => <>{kg}の{name}から、<br />{n}つの加工品が生まれました。</>,
     familyLead: 'これはそのうちの1つです。分けた重さの合計が元の重さを超えないことを、記録のたびに確かめています。',
+    familyLeadLot: 'これはそのうちの1つです。1尾ずつではなく、同じ船・同じ日・同じ銘柄のまとまりで記録しています。分けた重さの合計がまとまりの重さを超えないことを、記録のたびに確かめています。',
     thisProduct: 'この商品', otherProducts: 'ほかの加工品', trimmings: '骨・皮・端材など',
     proofToggle: '記録の証明を見る', proofFor: 'バイヤー・専門家向け',
     proofLead: 'それぞれの記録は、ひとつ前の記録の指紋（ハッシュ）を含んでいます。1件でも書き換えると、それ以降の指紋がすべて合わなくなります。',
@@ -56,13 +63,14 @@ export const STR = {
     erasedId: 'ラベルの番号', erasedIssuer: '登録した事業者',
   },
   en: {
-    eyebrow: 'GYOSEKI · The registry of this fish',
+    eyebrow: 'GYOSEKI · The registry of this fish', eyebrowLot: 'GYOSEKI · The registry of this catch',
+    fromLot: (day, ship, species, grade, count, kg) => `From a catch of about ${count} ${species} (${grade ?? 'Ungraded'}, ${kg} kg in total) landed by ${ship ?? 'a vessel'} on ${day}`,
     tagline: 'A registry for every fish, from the sea to your table',
     meta: (kg, ship, species, fromProduct) => `${kg} kg${ship ? ` · ${fromProduct ? `from a ${species}` : species} caught by ${ship}` : ''}`,
     sealWait: 'Checking the records', sealOk: 'The records have not been altered', sealNg: 'The records do not match',
     sealWaitSub: 'One moment, please', sealOkSub: (n) => (n === 1 ? 'The record is verified' : `All ${n} records verified`), sealNgSub: 'Part of the record may have been altered',
     statKm: 'Journey from the sea', daysUnit: (n) => (n === 1 ? ' day' : ' days'), statDays: 'Since landing', recordsUnit: '', statRecords: 'Records so far',
-    photoRoot: 'This fish as it was landed', photoOk: 'Photo matches the record', photoProcessed: 'Processed',
+    photoRoot: 'This fish as it was landed', photoRootLot: 'The catch as it was landed', photoOk: 'Photo matches the record', photoProcessed: 'Processed',
     photoAlt: (species) => `${species} at landing`, photoAltOwn: (name) => `Photo of ${name}`,
     mapTitle: 'From the sea to Kesennuma.', mapNote: 'Fishing area shown at a representative point. Map © OpenFreeMap / OpenStreetMap', mapFallback: 'The map cannot be shown on this device',
     pinCatch: 'Caught', pinApprox: ' (approx.)', unknownArea: 'Unknown area', pinLanded: 'Landed', pinLandedProcessed: 'Landed & processed',
@@ -74,6 +82,7 @@ export const STR = {
     storage: (s) => `Storage: ${s}`, bestBefore: 'Best before', useBy: 'Use by', keepAt: (s) => `Keep at ${s}`,
     familyTitle: (kg, name, n) => <>One {kg} {name}<br />became {n} products.</>,
     familyLead: 'This is one of them. Every time a record is added, we check that the pieces never weigh more than the original fish.',
+    familyLeadLot: 'This is one of them. The catch is recorded as one batch — same vessel, same day, same size grade — rather than fish by fish. Every time a record is added, we check that the pieces never weigh more than the batch.',
     thisProduct: 'This product', otherProducts: 'Other products', trimmings: 'Bones, skin and trimmings',
     proofToggle: 'See the proof', proofFor: 'For buyers and experts',
     proofLead: 'Each record contains the fingerprint (hash) of the record before it. Change a single record, and every fingerprint after it stops matching.',

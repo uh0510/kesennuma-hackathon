@@ -6,6 +6,7 @@
 //     確認の決まりは1件ずつのときと同じ。チェーンは引き渡し・受け取りを recordBatch の1回の取引にまとめる
 //   photo = { base64, mediaType }。Storage（photos バケット）に保存し、写真の指紋を payload.photo に入れて記録の指紋に含める
 //   location = { lat, lng, accuracy }（記録した場所）。その時点の事業者の登録住所の座標と距離を添えて payload.location に入れる
+// 水揚げ（landing）は、1尾ずつ（individual：マグロ系）か、まとまり（catch_lot：船 × 水揚げ日 × 魚種 × 銘柄。quantity は尾数）
 // 加工品（born）の魚種は、画面から送られた値ではなく親の魚種を使う（途中で魚種を書き換えられないように）
 // 受け渡しの鎖：せり・出荷で payload.toId に渡す相手を指定 → 相手が receive すると持ち主が移る。
 //   加工・せり・出荷・保管・QR有効化・販売開始は今の持ち主だけ。受け取りは指定された相手だけ。それ以外は拒否する
@@ -49,9 +50,13 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 // 画面から受け取ってよい項目だけを取り出す（qr_status などを勝手に送り込めないように）
 function pickNewItem(newItem: Record<string, unknown>, type: string, parentId: string | null) {
   const n = (v: unknown) => (v === undefined || v === '' ? null : v)
-  if (type === 'landing' && newItem.kind === 'individual' && !parentId) {
+  if (type === 'landing' && (newItem.kind === 'individual' || newItem.kind === 'catch_lot') && !parentId) {
+    const lot = newItem.kind === 'catch_lot'
+    const quantity = lot ? Math.trunc(Number(newItem.quantity ?? 1)) : 1
+    if (!(quantity >= 1 && quantity <= 1000000)) throw new Error('尾数を正しく入れてください')
+    if (!(Number(newItem.weight_kg) > 0)) throw new Error('重さを正しく入れてください')
     return {
-      kind: 'individual', species: newItem.species, name: newItem.name, weight_kg: Number(newItem.weight_kg),
+      kind: newItem.kind, species: newItem.species, name: newItem.name, weight_kg: Number(newItem.weight_kg), quantity,
       ship_id: n(newItem.ship_id), catch_area: n(newItem.catch_area), landed_at: n(newItem.landed_at), landing_port: (n(newItem.landing_port) ?? '気仙沼港'),
     }
   }
@@ -65,7 +70,7 @@ function pickNewItem(newItem: Record<string, unknown>, type: string, parentId: s
       quantity, unit_kg: Math.round(unit * 1000) / 1000, weight_kg: Math.round(quantity * unit * 100) / 100,
     }
   }
-  throw new Error('個体は landing、加工品は born（親IDつき）で発行してください')
+  throw new Error('個体・水揚げロットは landing、加工品は born（親IDつき）で発行してください')
 }
 
 // 写真を保存し、写真そのものの指紋（SHA-256）を返す。写真を差し替えると指紋が合わなくなる
@@ -163,12 +168,13 @@ async function locate(supa: any, actor: string, loc: { lat?: unknown; lng?: unkn
 // 登録した瞬間の値（マスタの値を含む）を写し取る
 // deno-lint-ignore no-explicit-any
 async function snapshot(supa: any, row: Record<string, unknown>, parentId: string | null) {
-  if (row.kind === 'individual') {
+  if (row.kind === 'individual' || row.kind === 'catch_lot') {
     const { data: ship } = row.ship_id
       ? await supa.from('ships').select('name, reg_no, permit_no, gear').eq('id', row.ship_id).single()
       : { data: null }
     return {
-      kind: 'individual', species: row.species, name: row.name, weight_kg: row.weight_kg,
+      kind: row.kind, species: row.species, name: row.name, weight_kg: row.weight_kg,
+      ...(row.kind === 'catch_lot' ? { quantity: row.quantity } : {}),
       catch_area: row.catch_area, landed_at: row.landed_at, landing_port: row.landing_port, ship,
     }
   }
