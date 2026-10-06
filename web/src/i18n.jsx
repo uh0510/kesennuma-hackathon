@@ -9,7 +9,9 @@ export const TERMS = {
   // 銘柄（サイズの区分）
   '大': 'Large', '中': 'Medium', '小': 'Small', '区分なし': 'Ungraded',
   // 海域・港
-  '北西太平洋（FAO 61）': 'Northwest Pacific (FAO 61)', '三陸沖': 'Off Sanriku', '気仙沼港': 'Kesennuma Port',
+  '北西太平洋（FAO 61）': 'Northwest Pacific (FAO 61)', '三陸沖': 'Off Sanriku', '中東部大西洋（FAO 34）': 'Eastern Central Atlantic (FAO 34)',
+  '中西部太平洋（FAO 71）': 'Western Central Pacific (FAO 71)', '南西太平洋（FAO 81）': 'Southwest Pacific (FAO 81)', 'インド洋東部（FAO 57）': 'Eastern Indian Ocean (FAO 57)',
+  '気仙沼港': 'Kesennuma Port', 'ラス・パルマス港（スペイン）': 'Port of Las Palmas (Spain)',
   // 漁法・保存方法
   'はえ縄': 'Longline', '一本釣り': 'Pole and line', '−18℃以下': '−18°C or below', '4℃以下': '4°C or below',
   // 製品
@@ -61,6 +63,15 @@ export const STR = {
     erasedTitle: '記録が消された疑いがあります',
     erasedLead: 'このラベルの番号は、たしかに登録されていました（あとから消せない台帳＝ブロックチェーンに残っています）。ところが今は、その記録を見ることができません。お店か、下の事業者にお問い合わせください。',
     erasedId: 'ラベルの番号', erasedIssuer: '登録した事業者',
+    aisTitle: '申告は、船の位置の記録と合っているか。',
+    aisLead: '漁船は自分の位置の信号（AIS）を出しています。その記録を Global Fishing Watch がまとめた公開データと、水揚げのときの申告を照らし合わせています。',
+    aisArea: '漁をした海域', aisDeclared: (a) => `申告：${a}`, aisSeen: (list, total) => `位置の記録：${list}（漁をしたと見られる ${total} 回のうち）`,
+    aisAreaOk: '申告どおりの海域で漁をしていました', aisAreaPartial: '一部は申告と違う海域で漁をしていました', aisAreaNg: '申告と違う海域で漁をしていました',
+    aisAreaNone: '漁の記録が見つかりません（位置の信号が届いていなかった可能性があります）',
+    aisPort: '水揚げした港', aisPortOk: (port, d) => `${port} への入港を確認しました（${d}）`, aisPortNg: (port) => `${port} への入港が、位置の記録に見つかりません`,
+    aisRoute: '寄った港（位置の記録）', aisNote: 'データは約4日遅れです。漁をしたと見られる場所を点で示しています',
+    aisLoading: '船の位置の記録を確かめています…', aisError: '船の位置の記録を読めませんでした',
+    aisSample: '表示例：この欄は仕組みを見せるための見本です。位置の記録は、この商品の船のものではありません（別の船の公開データ、または作りもののデータ）。', aisMapNote: '橙の点＝船が漁をしたと見られる場所（AIS）',
   },
   en: {
     eyebrow: 'GYOSEKI · The registry of this fish', eyebrowLot: 'GYOSEKI · The registry of this catch',
@@ -97,6 +108,15 @@ export const STR = {
     erasedTitle: 'This record may have been deleted',
     erasedLead: 'This label number was registered — the blockchain, which cannot be altered afterwards, still holds that fact. But its records can no longer be found. Please contact the store or the business below.',
     erasedId: 'Label number', erasedIssuer: 'Registered by',
+    aisTitle: 'Does the declaration match where the vessel actually was?',
+    aisLead: 'Fishing vessels broadcast their position (AIS). We compare the declaration made at landing with public data compiled by Global Fishing Watch.',
+    aisArea: 'Fishing area', aisDeclared: (a) => `Declared: ${a}`, aisSeen: (list, total) => `Tracking data: ${list} (of ${total} apparent fishing events)`,
+    aisAreaOk: 'Fished in the declared area', aisAreaPartial: 'Part of the fishing was outside the declared area', aisAreaNg: 'Fished outside the declared area',
+    aisAreaNone: 'No fishing activity found (the position signal may not have been received)',
+    aisPort: 'Port of landing', aisPortOk: (port, d) => `Port call at ${port} confirmed (${d})`, aisPortNg: (port) => `No port call at ${port} found in the tracking data`,
+    aisRoute: 'Port calls (tracking data)', aisNote: 'Data is delayed by about 4 days. Dots show apparent fishing locations',
+    aisLoading: 'Checking the vessel tracking data…', aisError: 'Could not load the vessel tracking data',
+    aisSample: 'Sample display: this panel only demonstrates how the check works. The tracking data is not from this product’s vessel (it is public data from another vessel, or made-up data).', aisMapNote: 'Orange dots = apparent fishing locations (AIS)',
   },
 }
 

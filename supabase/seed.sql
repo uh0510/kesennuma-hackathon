@@ -17,6 +17,11 @@ insert into ships (name, reg_no, permit_no, gear) values
   ('第五 浜風丸', 'MG3-[登録番号]', '[許可番号]', 'はえ縄'),
   ('第十八 潮丸', 'MG3-[登録番号]', '[許可番号]', '一本釣り');
 
+-- 船の位置の記録（AIS）との照らし合わせの表示例（migrations/011_vessel_demo.sql と同じ。名前は架空）
+-- 第八 海鳴丸：実在の船の公開データを表示例として使う ／ 第五 浜風丸：作りものの見本データ（申告と違う海域の例）
+update ships set gfw_vessel_id = 'e6e26391d-d2e2-1679-3f5f-a27afb14f0d7', ais_sample = true where name = '第八 海鳴丸';
+update ships set gfw_vessel_id = 'sample:south-pacific', ais_sample = true where name = '第五 浜風丸';
+
 -- 歩留まりは仮の値（加工業者へのヒアリングで確定する）
 insert into products (name, species, storage, shelf_days, yield_min, yield_max) values
   ('メカジキ ロイン（冷凍）', 'メカジキ',     '−18℃以下', 182, 0.550, 0.700),

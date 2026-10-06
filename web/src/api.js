@@ -33,12 +33,14 @@ export async function fetchMe() {
 }
 
 // ---- 読み取り ----
+// 船マスタは公開してよい列だけ読む（AIS の番号・GFW の船のIDは公開しない。照合は vessel-activity がサーバーで行う）
+const SHIP_COLUMNS = 'id, name, reg_no, permit_no, gear, created_at'
 // ログインした事業者：見える範囲を全部読んで画面側で組み立てる（範囲は DB の RLS が絞る）
 export async function fetchAll() {
   const [items, events, ships, products, businesses] = await Promise.all([
     supabase.from('items').select('*').order('created_at'),
     supabase.from('events').select('*').order('id'),
-    supabase.from('ships').select('*').order('name'),
+    supabase.from('ships').select(SHIP_COLUMNS).order('name'),
     supabase.from('products').select('*').order('name'),
     supabase.from('businesses').select('*'),
   ])
@@ -50,7 +52,7 @@ export async function fetchAll() {
 export async function fetchTrace(id) {
   const [trace, ships, products, businesses] = await Promise.all([
     supabase.rpc('public_trace', { p_item: id }),
-    supabase.from('ships').select('*').order('name'),
+    supabase.from('ships').select(SHIP_COLUMNS).order('name'),
     supabase.from('products').select('*').order('name'),
     supabase.from('businesses').select('*'),
   ])
@@ -73,6 +75,18 @@ async function issuerOnChain(id) {
   const reg = new ethers.Contract(REGISTRY, ['function issuerOf(bytes32) view returns (address)'], new ethers.JsonRpcProvider(RPC))
   const a = await reg.issuerOf(await itemKey(id))
   return a === ethers.ZeroAddress ? null : a
+}
+
+// 漁船が実際に漁をした場所と入港した港（Global Fishing Watch の公開データ。vessel-activity が船マスタから船を引いて問い合わせる）
+// 船に AIS の番号がひも付いていなければ { linked: false }
+export async function fetchVesselActivity(shipId, landedAt) {
+  const { data, error } = await supabase.functions.invoke('vessel-activity', { body: { shipId, landedAt } })
+  if (error) {
+    const msg = await error.context?.json?.().then((j) => j.error).catch(() => null)
+    throw new Error(msg ?? error.message)
+  }
+  if (!data?.ok) throw new Error(data?.error ?? '位置の記録を読めませんでした')
+  return data
 }
 
 // 写真の公開URL（photos バケットは公開読み取り）
@@ -110,10 +124,10 @@ export async function nextLandingId(prefix, knownIds) {
 
 // 水揚げを登録（IDを発行し、landing を記録）
 // lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
-export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, period, landedAt, photo }) {
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, period, landedAt, photo }) {
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
-    newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landed_at: landedAt },
+    newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landing_port: landingPort, landed_at: landedAt },
     payload: lot
       ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, weight_kg: weightKg }
       : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, weight_kg: weightKg },

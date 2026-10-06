@@ -31,6 +31,9 @@ create table ships (
   permit_no   text,                     -- 漁業許可番号
   gear        text not null,            -- 漁法
   owner_line_id text,                   -- 将来：LINE連携用
+  mmsi        text,                     -- AIS の番号（9桁）
+  gfw_vessel_id text,                   -- Global Fishing Watch の船のID（操業した海域・入港した港の照合に使う）。'sample:' で始まるものは作りものの見本
+  ais_sample  boolean not null default false, -- 表示例（画面に「見本」と出す）
   created_at  timestamptz not null default now()
 );
 
@@ -215,7 +218,11 @@ create policy members_read_own    on members    for select using (user_id = auth
 
 -- 念のため、公開キーからの書き込み権限そのものを外しておく（RLS の設定漏れがあっても書けない）
 grant usage on schema public to anon, authenticated;
-grant select on businesses, ships, products to anon, authenticated;
+grant select on businesses, products to anon, authenticated;
+-- 船マスタの AIS の番号・GFW の船のIDは公開しない（照合は vessel-activity がサーバーで行う）
+-- Supabase は最初から全部の列を読めるようにしているので、いったん外してから読んでよい列だけ渡す
+revoke select on ships from anon, authenticated;
+grant select (id, name, reg_no, permit_no, gear, owner_line_id, created_at, ais_sample) on ships to anon, authenticated;
 grant select on items, events, item_balance to authenticated;
 grant select on members to authenticated;
 revoke insert, update, delete, truncate on businesses, members, ships, products, items, events from anon, authenticated;

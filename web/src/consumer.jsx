@@ -8,7 +8,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
 import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll } from './model.js'
-import { explorerTx, explorerAddress } from './api.js'
+import { explorerTx, explorerAddress, fetchVesselActivity } from './api.js'
+import { checkAis } from './lib/ais.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
 import { BRAND } from './brand.js'
 
@@ -16,8 +17,18 @@ import { BRAND } from './brand.js'
 const AREA_POINTS = {
   '北西太平洋（FAO 61）': [150.5, 37.6],
   '三陸沖': [143.4, 39.0],
+  '中東部大西洋（FAO 34）': [-21.0, 22.0],
+  '中西部太平洋（FAO 71）': [160.0, 5.0],
+  '南西太平洋（FAO 81）': [175.0, -32.0],
+  'インド洋東部（FAO 57）': [100.0, -15.0],
 }
 const KESENNUMA_PORT = [141.5785, 38.9035]
+// 水揚げ港（遠洋の船は海外で水揚げすることがある）
+const PORT_POINTS = {
+  '気仙沼港': KESENNUMA_PORT,
+  'ラス・パルマス港（スペイン）': [-15.4167, 28.1419],
+}
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark'
 
 const EV = EV_LABEL
@@ -108,7 +119,7 @@ function HeroPhoto({ main, sub, root, it, verify, t, lang }) {
 }
 
 // 旅の地図：海域 → 気仙沼港 → 加工場。画面に入ったら線が伸びていく
-function JourneyMap({ stops, t }) {
+function JourneyMap({ stops, t, ais }) {
   const box = useRef(null)
   const mapRef = useRef(null)
   const inView = useInView(box, { once: true, margin: '-120px' })
@@ -145,7 +156,9 @@ function JourneyMap({ stops, t }) {
         const side = s.side === 'left' ? (wide ? 'left' : 'below-left') : i >= 2 && i % 2 === 0 ? (wide ? 'left' : 'below') : 'right'
         const el = document.createElement('div')
         el.className = `map-pin ${side}`
-        el.innerHTML = `<span class="dot"></span><span class="tag"><b>${s.label}</b>${s.sub ? `<small>${s.sub}</small>` : ''}</span>`
+        // 近い場所でいくつもの事業者を通ったときは、1つのピンに「事業者：やったこと」を並べる
+        const lines = s.lines ?? [{ label: s.label, sub: s.sub }]
+        el.innerHTML = `<span class="dot"></span><span class="tag">${lines.map((l) => `<b>${esc(l.label)}</b>${l.sub ? `<small>${esc(l.sub)}</small>` : ''}`).join('')}</span>`
         new maplibregl.Marker({ element: el, anchor: PLACE[side][0], offset: PLACE[side][1] }).setLngLat(s.at).addTo(map)
       })
       setReady(true)
@@ -177,6 +190,27 @@ function JourneyMap({ stops, t }) {
     return () => c.stop()
   }, [ready, inView])
 
+  // 船の位置の記録（AIS）：漁をしたと見られる地点（橙）と入港した港（白）を、届いたら重ねる
+  useEffect(() => {
+    const map = mapRef.current
+    if (!ready || !ais?.linked || !map?.style) return
+    // 日付変更線をまたぐ海域（南太平洋など）は、経度を同じ側にそろえる（地図が地球一周に広がらないように）
+    const lon = (x) => (stops[0].at[0] > 90 && x < -90 ? x + 360 : x)
+    const fc = (pts) => ({ type: 'FeatureCollection', features: pts.filter((p) => p.lat != null && p.lon != null).map((p) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon(p.lon), p.lat] } })) })
+    const add = (id, data, paint) => {
+      if (map.getSource(id)) return map.getSource(id).setData(data)
+      map.addSource(id, { type: 'geojson', data })
+      map.addLayer({ id, type: 'circle', source: id, paint }, 'route-glow')
+    }
+    add('ais-fishing', fc(ais.fishing), { 'circle-radius': 3.5, 'circle-color': '#ff9f0a', 'circle-opacity': 0.75, 'circle-blur': 0.3 })
+    add('ais-ports', fc(ais.ports), { 'circle-radius': 4, 'circle-color': '#f5f5f7', 'circle-stroke-color': '#000', 'circle-stroke-width': 1 })
+    const b = new maplibregl.LngLatBounds()
+    stops.forEach((s) => b.extend(s.at))
+    ais.fishing.forEach((p) => p.lat != null && b.extend([lon(p.lon), p.lat]))
+    const wide = box.current.clientWidth > 700
+    map.fitBounds(b, { padding: wide ? { top: 160, bottom: 160, left: 260, right: 260 } : { top: 150, bottom: 150, left: 60, right: 60 }, duration: 1200, maxZoom: 7 })
+  }, [ready, ais])
+
   if (failed) return <MapFallback stops={stops} t={t} />
   return <div ref={box} className="journey-map" />
 }
@@ -195,6 +229,46 @@ function MapFallback({ stops, t }) {
       </div>
       <div className="fb-note">{t.mapFallback}</div>
     </div>
+  )
+}
+
+// 申告と、船の位置の記録（AIS）の照らし合わせ
+function AisCheck({ root, ais, t, lang }) {
+  // 船に AIS がひも付いていない・読めなかったときは何も出さない（消費者には関係のない失敗なので）
+  if (ais === undefined || ais?.linked === false || ais?.error) return null
+  const res = ais && !ais.error ? checkAis({ catchArea: root.info.catchArea, landingPort: root.info.port, landedAt: root.info.landedAt ?? root.info.createdAt, ais }) : null
+  const tr = (x) => term(lang, x)
+  const mark = (level) => ({ ok: ['ok', '✓'], partial: ['warn', '!'], ng: ['ng', '!'], none: ['warn', '?'] }[level] ?? ['warn', '?'])
+  const Row = ({ level, title, main, sub }) => (
+    <div className="ais-row" data-level={mark(level)[0]}>
+      <span className="ais-mark" aria-hidden>{mark(level)[1]}</span>
+      <div><div className="ais-row-title">{title}</div><div className="ais-row-main">{main}</div>{sub && <div className="ais-row-sub">{sub}</div>}</div>
+    </div>
+  )
+  return (
+    <section className="story-section">
+      <motion.div {...reveal}>
+        <div className="eyebrow-dark">CHECKED AGAINST VESSEL TRACKING</div>
+        <h2 className="story-h2">{t.aisTitle}</h2>
+        <p className="story-lead">{t.aisLead}</p>
+      </motion.div>
+      <motion.div className="ais-card glass-dark" {...reveal} transition={{ ...reveal.transition, delay: 0.15 }}>
+        {ais === null && <div className="ais-row-sub">{t.aisLoading}</div>}
+        {ais?.sample && <div className="ais-sample">{t.aisSample}</div>}
+        {res && <>
+          <Row level={res.area} title={t.aisArea}
+            main={{ ok: t.aisAreaOk, partial: t.aisAreaPartial, ng: t.aisAreaNg, none: t.aisAreaNone }[res.area]}
+            sub={<>{t.aisDeclared(tr(root.info.catchArea) ?? '—')}<br />{res.total ? t.aisSeen(res.top.slice(0, 3).map(([f, n]) => `FAO ${f}：${n}`).join(' / '), res.total) : ''}</>} />
+          {res.port && <Row level={res.port} title={t.aisPort}
+            main={res.port === 'ok' ? t.aisPortOk(tr(root.info.port), ymd(res.visit.start)) : t.aisPortNg(tr(root.info.port))} />}
+          {res.route.length > 0 && <div className="ais-route"><span>{t.aisRoute}</span>{res.route.join(' → ')}</div>}
+        </>}
+        <div className="ais-foot">
+          <a href="https://globalfishingwatch.org" target="_blank" rel="noreferrer">Powered by Global Fishing Watch</a>
+          <span>{t.aisNote}</span>
+        </div>
+      </motion.div>
+    </section>
   )
 }
 
@@ -295,26 +369,44 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const { scrollYProgress } = useScroll({ target: journeyRef, offset: ['start 70%', 'end 60%'] })
   const progress = useSpring(scrollYProgress, { stiffness: 120, damping: 30 })
 
-  // 地図の地点：漁獲した海域 → 記録された場所を時間順に。3km 以内に続く地点は1つにまとめ、そこで行われたことを並べる
+  // 地図の地点：漁獲した海域 → 通った場所を記録の順に。水揚げは水揚げ港、ほかは記録した場所（なければその事業者の登録住所）。
+  // 3km 以内に続く地点は1つのピンにまとめ、事業者ごとに「やったこと」を並べる
   const stops = useMemo(() => {
     const s = [{ at: AREA_POINTS[root.info.catchArea] ?? AREA_POINTS['北西太平洋（FAO 61）'], label: t.pinCatch, sub: `${tr(root.info.catchArea) ?? t.unknownArea}${t.pinApprox}`, side: 'left' }]
-    const placed = chain.flatMap((c) => c.rawEvents.map((e) => ({ e, c }))).filter(({ e }) => e.payload?.location && t.pinDid[e.type]).sort((a, b) => a.e.id - b.e.id)
-    for (const { e, c } of placed) {
-      const at = [e.payload.location.lng, e.payload.location.lat]
+    const evs = chain.flatMap((c) => c.events.map((e) => ({ e, c }))).filter(({ e }) => t.pinDid[e.type]).sort((a, b) => a.e.id - b.e.id)
+    for (const { e, c } of evs) {
+      const landing = e.type === 'landing'
+      const port = c.info.port ?? '気仙沼港'
+      const at = landing ? (PORT_POINTS[port] ?? KESENNUMA_PORT) : e.loc ? [e.loc.lng, e.loc.lat] : e.home
+      if (!at) continue
+      const name = landing ? tr(port) : tr(e.who)
       const did = t.pinDid[e.type]
       const last = s.length > 1 ? s.at(-1) : null
-      if (last && km(last.at, at) <= 3) {
-        if (!last.dids.includes(did)) last.dids.push(did)
-        continue
-      }
-      const who = c.events.find((x) => x.id === e.id)?.who
-      s.push({ at, label: e.type === 'landing' ? tr('気仙沼港') : tr(who), dids: [did] })
+      const stop = last && km(last.at, at) <= 3 ? last : (s.push({ at, lines: [] }), s.at(-1))
+      const line = stop.lines.find((l) => l.label === name) ?? (stop.lines.push({ label: name, dids: [] }), stop.lines.at(-1))
+      if (!line.dids.includes(did)) line.dids.push(did)
     }
-    // 場所の記録がない（つなぐ前の記録など）ときは、これまでどおり気仙沼港を置く
-    if (s.length === 1) s.push({ at: KESENNUMA_PORT, label: tr('気仙沼港'), dids: [chain.length > 1 ? t.pinLandedProcessed : t.pinLanded] })
-    return s.map((p) => (p.dids ? { ...p, sub: p.dids.join(' · '), dids: undefined } : p))
+    // 場所の分かる記録がないときは、これまでどおり気仙沼港を置く
+    if (s.length === 1) s.push({ at: KESENNUMA_PORT, lines: [{ label: tr('気仙沼港'), dids: [chain.length > 1 ? t.pinLandedProcessed : t.pinLanded] }] })
+    return s.map((p) => {
+      if (!p.lines) return p
+      const lines = p.lines.map((l) => ({ label: l.label, sub: l.dids.join(' · ') }))
+      return { at: p.at, lines, label: lines.map((l) => l.label).join(' / '), sub: lines.map((l) => l.sub).join(' / ') }
+    })
   }, [chain, lang])
   const distance = Math.round(stops.slice(1).reduce((n, s, i) => n + km(stops[i].at, s.at), 0) / 10) * 10
+
+  // 船の位置の記録（AIS）：undefined＝船にひも付いていない（何も出さない）/ null＝読み込み中 / { error }＝読めなかった
+  const [ais, setAis] = useState(undefined)
+  useEffect(() => {
+    if (!root.info.shipId) return
+    let alive = true
+    setAis(null)
+    fetchVesselActivity(root.info.shipId, root.info.landedAt ?? root.info.createdAt)
+      .then((r) => alive && setAis(r.linked ? r : undefined))
+      .catch((e) => alive && setAis({ error: e.message }))
+    return () => { alive = false }
+  }, [root.id])
 
   // 道のり：漁獲（船の情報）＋ 各記録を時間順に
   const chapters = useMemo(() => {
@@ -386,9 +478,12 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
           <div className="eyebrow-dark">THE JOURNEY</div>
           <h2 className="story-h2">{t.mapTitle}</h2>
         </motion.div>
-        <MapBoundary stops={stops} t={t}><JourneyMap stops={stops} t={t} /></MapBoundary>
-        <div className="map-note">{t.mapNote}</div>
+        <MapBoundary stops={stops} t={t}><JourneyMap stops={stops} t={t} ais={ais?.linked ? ais : null} /></MapBoundary>
+        <div className="map-note">{t.mapNote}{ais?.linked ? ` ・ ${t.aisMapNote}` : ''}</div>
       </section>
+
+      {/* ---- 船の位置の記録との照らし合わせ ---- */}
+      <AisCheck root={root} ais={ais} t={t} lang={lang} />
 
       {/* ---- 道のり ---- */}
       <section className="story-section" ref={journeyRef}>

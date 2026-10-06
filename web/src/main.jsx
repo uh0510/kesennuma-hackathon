@@ -82,7 +82,9 @@ const GRADES = ['大', '中', '小', '区分なし']
 const unitWord = (it) => (it.kind === 'prod' ? '加工品' : it.unit === 'lot' ? '水揚げロット' : '個体')
 // 重さの入力の刻み：水揚げロット（数百kg〜）・1尾（数十kg〜）・加工品（kg 未満〜）
 const kgInput = (it) => (it.kind === 'prod' ? { steps: [0.1, 1], decimals: 2 } : it.unit === 'lot' ? { steps: [10, 100], decimals: 1 } : { steps: [1, 10], decimals: 1 })
-const AREAS = ['北西太平洋（FAO 61）', '三陸沖']
+const AREAS = ['北西太平洋（FAO 61）', '三陸沖', '中西部太平洋（FAO 71）', '南西太平洋（FAO 81）', 'インド洋東部（FAO 57）', '中東部大西洋（FAO 34）']
+// 水揚げ港：遠洋の船は、海外（スペイン）で水揚げしてから冷凍で日本へ運ぶことがある
+const PORTS = ['気仙沼港', 'ラス・パルマス港（スペイン）']
 const MOBILE = '(max-width: 47.99em)'
 
 const qrUrl = (id, pack) => `${location.origin}${location.pathname}?id=${encodeURIComponent(id)}${pack ? `&pack=${pack}` : ''}`
@@ -311,14 +313,14 @@ function PhotoPicker({ value, onChange, label = '写真', hint }) {
 }
 
 // 発行されるラベルの見本
-function LabelPreview({ itemId, species, kg, shipName }) {
+function LabelPreview({ itemId, species, kg, shipName, port = '気仙沼港' }) {
   return (
     <div>
       <Text className="field-label">発行されるラベル</Text>
       <div className="label-preview">
         <Paper p={6} radius="sm" withBorder><QRCodeSVG value={qrUrl(itemId)} size={76} /></Paper>
         <div style={{ minWidth: 0 }}>
-          <Text size="xs" c="dimmed" fw={600}>{BRAND.ja} · 気仙沼港</Text>
+          <Text size="xs" c="dimmed" fw={600}>{BRAND.ja} · {port}</Text>
           <Text ff="monospace" fw={700} size="md" style={{ wordBreak: 'break-all' }}>{itemId}</Text>
           <Text size="sm" c="dimmed">{species} · {Number(kg) || 0} kg · {shipName ?? '—'}</Text>
         </div>
@@ -1136,6 +1138,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   const [shipId, setShipId] = useState(null)
   const [species, setSpecies] = useState(SPECIES[0].name)
   const [area, setArea] = useState(AREAS[0])
+  const [port, setPort] = useState(PORTS[0])
   const [period, setPeriod] = useState('')
   const [kg, setKg] = useState(SPECIES[0].kg)
   const [count, setCount] = useState(1)
@@ -1144,9 +1147,11 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
   const sp = SPECIES.find((x) => x.name === species)
   const pickSpecies = (x) => { setSpecies(x.name); setKg(x.kg); setCount(x.count ?? 1) }
   const ship = ships.find((s) => s.id === (shipId ?? ships[0]?.id))
+  // 水揚げ日（登録が水揚げの翌日以降になることもあるので選べる。時刻は朝 6 時として記録）
+  const [day, setDay] = useState(ymd(new Date()))
+  const landedAt = new Date(`${day}T06:00:00+09:00`).toISOString()
   // ID：KSN-魚種コード-水揚げ日(YYMMDD)-連番（1尾ずつも水揚げロットも同じ形）
-  const today = new Date().toISOString()
-  const prefix = `KSN-${sp.code}-${ymd(today).replaceAll('-', '').slice(2)}-`
+  const prefix = `KSN-${sp.code}-${day.replaceAll('-', '').slice(2)}-`
   // 連番は空いているものを探す（チェーンにすでにあるIDも飛ばす）。チェーンに聞けないときは DB だけで決める
   const known = Object.keys(items).filter((id) => id.startsWith(prefix)).sort().join(' ')
   const [itemId, setItemId] = useState(null)
@@ -1202,7 +1207,14 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         </div>
         <div>
           <Text className="field-label">漁獲海域</Text>
-          <SegmentedControl fullWidth data={AREAS} value={area} onChange={setArea} />
+          <SegmentedControl fullWidth data={AREAS} value={area} onChange={setArea} orientation="vertical" />
+        </div>
+        <TextInput type="date" label="水揚げ日" value={day} max={ymd(new Date())} onChange={(e) => e.currentTarget.value && setDay(e.currentTarget.value)}
+          styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
+        <div>
+          <Text className="field-label">水揚げ港</Text>
+          <SegmentedControl fullWidth data={PORTS} value={port} onChange={setPort} />
+          {port !== PORTS[0] && <Text size="xs" c="dimmed" mt={6}>海外で水揚げし、冷凍で気仙沼へ運ぶ場合。消費者の地図にも水揚げした港が出ます</Text>}
         </div>
         {sp.lot && (
           <div>
@@ -1218,12 +1230,12 @@ function RegisterModal({ opened, onClose, busy, items, ships, onSave }) {
         <PhotoPicker value={photo} onChange={setPhoto} label="水揚げ時の写真"
           hint={sp.lot ? '消費者の画面に「水揚げ時の様子」として大きく出ます。加工品にも引き継がれます' : '消費者の画面に「元の1尾」として大きく出ます。加工品にも引き継がれます'} />
         {itemId
-          ? <LabelPreview itemId={itemId} species={sp.lot ? `${species}（${grade}・約${Number(count) || 0}尾）` : species} kg={kg} shipName={ship?.name} />
+          ? <LabelPreview itemId={itemId} species={sp.lot ? `${species}（${grade}・約${Number(count) || 0}尾）` : species} kg={kg} shipName={ship?.name} port={port} />
           : <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">番号を確かめています…</Text></Group>}
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!ship || !itemId || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, period, landedAt: today, photo })}>
+            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, period, landedAt, photo })}>
             {sp.lot ? '水揚げロットのIDを発行' : '個体IDを発行'}
           </Button>
         </Group>
