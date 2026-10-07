@@ -431,10 +431,12 @@ function MixModal({ opened, onClose, item, items, myId, busy, onSave }) {
         </div>
         <TextInput label="ロットの名前" value={name} onChange={(e) => setName(e.currentTarget.value)} />
         <Text size="sm" c="dimmed">入れた魚には、そのあと記録を足せません。加工品はロットから発行します。</Text>
+        {/* 加工ロットは2尾以上をまとめるときだけ。1尾なら、その魚から直接「加工して子IDを発行」と同じになる */}
+        {sel.length === 1 && <Alert radius="md" color="yellow" variant="light" icon={<IconAlertTriangle size={18} />}>1尾だけなら、その魚の「加工して子IDを発行」を使ってください</Alert>}
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
-          <Button loading={busy} disabled={sel.length === 0 || !name} leftSection={<IconStack2 size={18} />}
-            onClick={() => onSave({ inputs: sel.map((x) => x.id), name, species: item.species })}>{sel.length}件でロットを作る</Button>
+          <Button loading={busy} disabled={sel.length < 2 || !name} leftSection={<IconStack2 size={18} />}
+            onClick={() => onSave({ inputs: sel.map((x) => x.id), name, species: item.species })}>{sel.length < 2 ? '2件以上選んでください' : `${sel.length}件でロットを作る`}</Button>
         </Group>
       </Stack>
     </Sheet>
@@ -811,6 +813,10 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
   const isHolder = !!myId && cu.holder === myId
   const isRecipient = !!myId && cu.pending === myId
   const canAct = !myId || (isHolder && !cu.pending)
+  // 役割ごとにできる操作（サーバー record-event の決まりと同じ）：加工は加工・小売、販売開始は小売だけ。未ログインは押すとログインを求める
+  const role = me?.business?.role
+  const canProcess = !me || role === 'processor' || role === 'retailer'
+  const canSell = !me || role === 'retailer'
   // 加工品が今どこにあるか（持ち主ごと・引き渡し中ごとの数）
   const kidsWhere = (() => {
     const g = {}
@@ -877,7 +883,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           )}
           {myKids.length > 0 && !isHolder && (
             <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm" mb="sm">
-              <Button leftSection={<IconBuildingStore size={18} />} onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>
+              {canSell && <Button leftSection={<IconBuildingStore size={18} />} onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>}
               <Button leftSection={<IconPackageExport size={18} />} variant="light" onClick={() => open('bulk')}>加工品を引き渡す</Button>
             </SimpleGrid>
           )}
@@ -890,18 +896,18 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               <Text size="sm" c="dimmed">加工済みです（加工品 {it.children.length}ロット）。引き渡しはロットごとに記録します。</Text>
               <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm">
                 <Button leftSection={<IconPackageExport size={18} />} onClick={() => open('bulk')}>加工品を引き渡す</Button>
-                {myKids.length > 0 && <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>}
-                <Button leftSection={<IconCut size={18} />} variant="light" onClick={() => open('process')}>残りを加工する</Button>
+                {canSell && myKids.length > 0 && <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>}
+                {canProcess && <Button leftSection={<IconCut size={18} />} variant="light" onClick={() => open('process')}>残りを加工する</Button>}
                 <Button leftSection={<IconPlus size={18} />} variant="light" onClick={() => open('add')}>情報を追記</Button>
               </SimpleGrid>
             </Stack>
           ) : canAct ? (
             <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm">
-              <Button leftSection={<IconCut size={18} />} onClick={() => open('process')}>加工して子IDを発行</Button>
-              <Button leftSection={<IconPackageExport size={18} />} onClick={() => open('handover')}>引き渡す（せり・出荷）</Button>
-              <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('sell')}>販売を始める</Button>
+              {canProcess && <Button leftSection={<IconCut size={18} />} onClick={() => open('process')}>加工して子IDを発行</Button>}
+              <Button leftSection={<IconPackageExport size={18} />} onClick={() => open('handover')}>{role === 'market' ? '引き渡す（せり・出荷）' : '引き渡す（出荷）'}</Button>
+              {canSell && <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('sell')}>販売を始める</Button>}
               <Button leftSection={<IconPlus size={18} />} variant="light" onClick={() => open('add')}>情報を追記</Button>
-              {it.kind === 'ind' && it.unit !== 'mix' && myId && <Button leftSection={<IconStack2 size={18} />} variant="light" onClick={() => open('mix')} style={{ gridColumn: '1 / -1' }}>ほかの魚とまとめて加工ロットにする</Button>}
+              {canProcess && it.kind === 'ind' && it.unit !== 'mix' && myId && <Button leftSection={<IconStack2 size={18} />} variant="light" onClick={() => open('mix')} style={{ gridColumn: '1 / -1' }}>ほかの魚とまとめて加工ロットにする</Button>}
             </SimpleGrid>
           ) : isHolder ? (
             <Stack gap="xs">
@@ -1282,7 +1288,7 @@ function HandoverModal({ opened, onClose, item, businesses, myId, myRole, busy, 
   const [kind, setKind] = useState(myRole === 'market' ? 'auction' : 'ship')
   const order = NEXT_ROLES[myRole] ?? []
   const rank = (b) => (order.includes(b.role) ? order.indexOf(b.role) : order.length)
-  const others = businesses.filter((b) => b.id !== myId && b.role !== 'admin').sort((a, b) => rank(a) - rank(b))
+  const others = businesses.filter((b) => b.id !== myId && b.role !== 'admin' && b.role !== 'vessel').sort((a, b) => rank(a) - rank(b))
   // 渡す相手は、間違えないよう最初は選ばない（選ぶまで「引き渡す」は押せない）
   const [toId, setToId] = useState(null)
   const [kg, setKg] = useState(item.custody.lastKg)
@@ -1295,10 +1301,13 @@ function HandoverModal({ opened, onClose, item, businesses, myId, myRole, busy, 
           <ItemAvatar it={item} size={44} />
           <div style={{ minWidth: 0 }}><Text size="sm" fw={600}>{item.name}　{item.kg} kg</Text><Text size="xs" ff="monospace" c="dimmed" truncate>{item.id}</Text></div>
         </Group>
-        <div>
-          <Text className="field-label">記録の種類</Text>
-          <SegmentedControl fullWidth value={kind} onChange={setKind} data={[{ value: 'auction', label: 'せり結果' }, { value: 'ship', label: '出荷' }]} />
-        </div>
+        {/* せり結果は市場だけが記録できる（ほかの事業者は出荷だけ） */}
+        {myRole === 'market' && (
+          <div>
+            <Text className="field-label">記録の種類</Text>
+            <SegmentedControl fullWidth value={kind} onChange={setKind} data={[{ value: 'auction', label: 'せり結果' }, { value: 'ship', label: '出荷' }]} />
+          </div>
+        )}
         <div>
           <Text className="field-label">渡す相手（買い受けた事業者）を選ぶ</Text>
           <Stack gap="xs">
@@ -1334,7 +1343,7 @@ function BulkHandoverModal({ opened, onClose, item, items, businesses, myId, myR
   const [picked, setPicked] = useState(() => new Set(kids.filter(ready).map((k) => k.id)))
   const order = NEXT_ROLES[myRole] ?? []
   const rank = (b) => (order.includes(b.role) ? order.indexOf(b.role) : order.length)
-  const others = businesses.filter((b) => b.id !== myId && b.role !== 'admin').sort((a, b) => rank(a) - rank(b))
+  const others = businesses.filter((b) => b.id !== myId && b.role !== 'admin' && b.role !== 'vessel').sort((a, b) => rank(a) - rank(b))
   const [toId, setToId] = useState(null)
   const [detail, setDetail] = useState('')
   const sel = kids.filter((k) => picked.has(k.id))
@@ -1992,11 +2001,12 @@ function App() {
   }, [])
   const items = useMemo(() => (db ? buildItems(db) : null), [db])
   useEffect(() => {
-    if (qid || !me || view !== 'manage') return
+    if (qid || !authChecked || (me && view !== 'manage')) return
     const u = new URL(location.href)
-    if (sel) u.searchParams.set('item', sel); else u.searchParams.delete('item')
+    // ログアウトしたら消す（次にログインした人に前の記録を開かせない）
+    if (sel && me) u.searchParams.set('item', sel); else u.searchParams.delete('item')
     history.replaceState(null, '', u)
-  }, [sel, qid, me, view])
+  }, [sel, qid, me, view, authChecked])
   // ログアウトしたら管理画面に戻す（消費者画面の切り替えもログインした人だけ）
   useEffect(() => { if (authChecked && !me && !qid) setView('manage') }, [authChecked, me])
 

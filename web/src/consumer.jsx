@@ -232,6 +232,8 @@ function JourneyMap({ stops, t, ais }) {
           try {
             if (l.type === 'background') map.setPaintProperty(l.id, 'background-color', '#0a2230')
             else if (l.type === 'fill' && /water|ocean|sea/.test(l.id)) map.setPaintProperty(l.id, 'fill-color', '#04131d')
+            // 氷河・公園・建物などは元の黒のままだと藍の陸の上で黒く抜けるので、陸より少し明るい藍に
+            else if (l.type === 'fill') map.setPaintProperty(l.id, 'fill-color', '#0e2a3a')
           } catch { /* 色を変えられない層はそのまま */ }
         }
       }
