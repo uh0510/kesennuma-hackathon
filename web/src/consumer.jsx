@@ -204,6 +204,12 @@ function JourneyMap({ stops, t, ais }) {
         el.className = `map-pin ${side}`
         const lines = s.lines ?? [{ label: s.label, sub: s.sub }]
         el.innerHTML = `<span class="dot"></span><span class="tag">${lines.map((l) => `<b>${esc(l.label)}</b>${l.sub ? `<small>${esc(l.sub)}</small>` : ''}`).join('')}</span>`
+        // スマホでは名札を隠して丸だけ。押すと開く（もう一度押すと閉じる。ほかの地点は閉じる）
+        el.addEventListener('click', () => {
+          const open = !el.classList.contains('open')
+          box.current?.querySelectorAll('.map-pin.open').forEach((p) => p.classList.remove('open'))
+          if (open) el.classList.add('open')
+        })
         // 地球儀の裏側に回った地点は出さない
         new maplibregl.Marker({ element: el, anchor: PLACE[side][0], offset: PLACE[side][1], opacityWhenCovered: '0' }).setLngLat(s.at).addTo(map)
       })
@@ -757,7 +763,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
           <h2 className="story-h2">{t.mapTitle}</h2>
         </motion.div>
         <MapBoundary stops={stops} t={t}><JourneyMap stops={stops} t={t} ais={ais} /></MapBoundary>
-        <div className="map-note">{t.mapNote}{ais?.linked ? ` ・ ${t.aisMapNote}` : ''}</div>
+        <div className="map-note"><span className="only-mobile">{t.mapTapHint} ・ </span>{t.mapNote}{ais?.linked ? ` ・ ${t.aisMapNote}` : ''}</div>
       </section>
 
       {/* ---- 船の位置の記録との照らし合わせ ---- */}
