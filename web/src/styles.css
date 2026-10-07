@@ -9,8 +9,24 @@
   --apple-red: #ff3b30;
   --apple-hairline: rgba(0, 0, 0, 0.08);
   --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --accent-light-rgb: 0, 113, 227; /* 管理画面の主の色（明るい画面用） */
+  --brand-grad: linear-gradient(135deg, #0a84ff, #0071e3 55%, #34c759);
+  --logo-eye: #0071e3;
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
 }
+/* 気仙沼の海（theme.js の look＝sea）：主の色を海の青に */
+:root[data-look="sea"] {
+  --apple-accent: #14849f;
+  --apple-bg: #f2f6f7;
+  --accent-light-rgb: 20, 132, 159;
+  --brand-grad: linear-gradient(135deg, #1e8fb5, #0b4a63 60%, #04131d);
+  --logo-eye: #d9452e;
+}
+.look-dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0, 0, 0, 0.2); }
+.look-dot[data-look="sea"] { background: linear-gradient(135deg, #1e8fb5, #04131d); }
+.look-dot[data-look="classic"] { background: #000; }
+.logo-tile { display: grid; place-items: center; background: var(--brand-grad); flex-shrink: 0; }
+
 
 html, body { background: var(--apple-bg); color: var(--apple-text); -webkit-font-smoothing: antialiased; }
 
@@ -21,7 +37,7 @@ body::before {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse at 15% 10%, rgba(0, 113, 227, 0.16) 0%, transparent 50%),
+    radial-gradient(ellipse at 15% 10%, rgba(var(--accent-light-rgb), 0.16) 0%, transparent 50%),
     radial-gradient(ellipse at 85% 85%, rgba(52, 199, 89, 0.12) 0%, transparent 50%),
     radial-gradient(ellipse at 60% 40%, rgba(90, 200, 250, 0.10) 0%, transparent 60%),
     var(--apple-bg);
@@ -60,7 +76,7 @@ body::before {
 .list-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; width: 100%; transition: background 150ms var(--ease-apple); }
 .list-row + .list-row { border-top: 1px solid var(--apple-hairline); }
 .list-row:hover { background: rgba(0, 0, 0, 0.03); }
-.list-row[data-active] { background: rgba(0, 113, 227, 0.08); }
+.list-row[data-active] { background: rgba(var(--accent-light-rgb), 0.08); }
 
 .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: var(--apple-accent); }
 .section-label { font-size: 13px; color: var(--apple-text-2); padding: 0 16px; margin-bottom: 6px; }
@@ -72,7 +88,7 @@ body::before {
   border-radius: 52px; border: 10px solid #1d1d1f; overflow: hidden; position: relative;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.25);
   background:
-    radial-gradient(ellipse at 20% 0%, rgba(0, 113, 227, 0.18) 0%, transparent 55%),
+    radial-gradient(ellipse at 20% 0%, rgba(var(--accent-light-rgb), 0.18) 0%, transparent 55%),
     radial-gradient(ellipse at 90% 100%, rgba(52, 199, 89, 0.14) 0%, transparent 55%),
     var(--apple-bg);
 }
@@ -90,9 +106,9 @@ body::before {
   background: rgba(255, 255, 255, 0.75); border: 1.5px solid var(--apple-hairline);
   transition: border-color 180ms var(--ease-apple), box-shadow 180ms var(--ease-apple), background 180ms var(--ease-apple), transform 120ms var(--ease-apple);
 }
-.choice-card:hover { border-color: rgba(0, 113, 227, 0.35); }
+.choice-card:hover { border-color: rgba(var(--accent-light-rgb), 0.35); }
 .choice-card:active { transform: scale(0.98); }
-.choice-card[data-checked] { border-color: var(--apple-accent); background: rgba(0, 113, 227, 0.06); box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.12); }
+.choice-card[data-checked] { border-color: var(--apple-accent); background: rgba(var(--accent-light-rgb), 0.06); box-shadow: 0 0 0 4px rgba(var(--accent-light-rgb), 0.12); }
 .choice-check { position: absolute; top: 10px; right: 10px; color: var(--apple-accent); }
 
 /* 大きな数字の入力 */
@@ -157,9 +173,9 @@ body::before {
 /* 写真を撮る部品 */
 .photo-drop {
   display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px; border-radius: 16px;
-  border: 1.5px dashed rgba(0, 113, 227, 0.35); background: rgba(0, 113, 227, 0.03); transition: background 150ms var(--ease-apple);
+  border: 1.5px dashed rgba(var(--accent-light-rgb), 0.35); background: rgba(var(--accent-light-rgb), 0.03); transition: background 150ms var(--ease-apple);
 }
-.photo-drop:hover { background: rgba(0, 113, 227, 0.07); }
+.photo-drop:hover { background: rgba(var(--accent-light-rgb), 0.07); }
 .photo-preview { position: relative; border-radius: 16px; overflow: hidden; }
 .photo-preview img { display: block; width: 100%; max-height: 260px; object-fit: cover; }
 .photo-preview-actions { position: absolute; right: 10px; bottom: 10px; }
@@ -179,7 +195,7 @@ body::before {
 .brand-en { opacity: 0.6; }
 
 /* 記録の画面の位置の状態 */
-.geo-status { padding: 8px 12px; border-radius: 12px; background: rgba(0, 113, 227, 0.06); color: var(--apple-text-2); }
+.geo-status { padding: 8px 12px; border-radius: 12px; background: rgba(var(--accent-light-rgb), 0.06); color: var(--apple-text-2); }
 .geo-status[data-state='ok'] { background: rgba(52, 199, 89, 0.1); color: #1d7a3a; }
 .geo-status[data-state='ng'] { background: rgba(255, 159, 10, 0.12); color: #8a5300; }
 

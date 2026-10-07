@@ -29,13 +29,18 @@ import { checkAis } from './lib/ais.js'
 import { compressImage } from './lib/photo.js'
 import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
+import { LogoTile, qrLogo } from './logo.jsx'
+import { useLook } from './theme.js'
 import { ymd, mdhm, shortHash, buildItems, ancestors, rootOf, originsOf, useVerify, useVerifyAll, useVesselActivities } from './model.js'
 import { ConsumerNotice, ConsumerView } from './consumer.jsx'
 
-// Apple Blue を中心にした色の段階（Mantine は10段階で持つ）
+// 主の色の段階（Mantine は10段階で持つ）。apple＝Apple Blue（黒の見た目）、sea＝気仙沼の海の青（theme.js の look で切り替え）
 const theme = createTheme({
   primaryColor: 'apple',
-  colors: { apple: ['#e5f1fc', '#cce3f9', '#99c6f3', '#66aaee', '#338de8', '#0071e3', '#0066cc', '#005bb5', '#004f9e', '#003d7a'] },
+  colors: {
+    apple: ['#e5f1fc', '#cce3f9', '#99c6f3', '#66aaee', '#338de8', '#0071e3', '#0066cc', '#005bb5', '#004f9e', '#003d7a'],
+    sea: ['#e4f4f8', '#c6e7ef', '#93d1e0', '#5db8ce', '#2f9fba', '#14849f', '#0e7089', '#0b5b70', '#084757', '#06333f'],
+  },
   primaryShade: 5,
   fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Hiragino Sans', 'BIZ UDPGothic', 'Yu Gothic UI', sans-serif",
   fontFamilyMonospace: "'SF Mono', 'IBM Plex Mono', ui-monospace, monospace",
@@ -117,14 +122,14 @@ function InfoList({ rows }) {
 function KindIcon({ kind, size = 36 }) {
   const ind = kind === 'ind'
   return (
-    <ThemeIcon size={size} radius="xl" variant="light" color={ind ? 'apple' : 'orange'}>
+    <ThemeIcon size={size} radius="xl" variant="light" color={ind ? undefined : 'orange'}>
       {ind ? <IconFish size={size * 0.55} /> : <IconPackage size={size * 0.55} />}
     </ThemeIcon>
   )
 }
 
 function KindBadge({ it }) {
-  return <Badge color={it.kind === 'ind' ? 'apple' : 'orange'}>{unitWord(it)}</Badge>
+  return <Badge color={it.kind === 'ind' ? undefined : 'orange'}>{unitWord(it)}</Badge>
 }
 
 function VerifyBadge({ item, variant = 'light' }) {
@@ -558,7 +563,7 @@ function LabelPreview({ itemId, species, kg, shipName, port = '気仙沼港' }) 
     <div>
       <Text className="field-label">発行されるラベル</Text>
       <div className="label-preview">
-        <Paper p={6} radius="sm" withBorder><QRCodeSVG value={qrUrl(itemId)} size={76} /></Paper>
+        <Paper p={6} radius="sm" withBorder><QRCodeSVG value={qrUrl(itemId)} size={76} {...qrLogo(76)} /></Paper>
         <div style={{ minWidth: 0 }}>
           <Text size="xs" c="dimmed" fw={600}>{BRAND.ja} · {port}</Text>
           <Text ff="monospace" fw={700} size="md" style={{ wordBreak: 'break-all' }}>{itemId}</Text>
@@ -653,7 +658,7 @@ function QrBlock({ it, onPrint, size = 112, onBand = false }) {
   return (
     <Stack align="center" gap={8}>
       <Paper p={8} radius="md" shadow={onBand ? 'md' : undefined} style={{ background: 'white' }}>
-        <Box style={{ opacity: it.qr === 'active' ? 1 : 0.4 }}><QRCodeSVG value={qrUrl(it.id)} size={size} /></Box>
+        <Box style={{ opacity: it.qr === 'active' ? 1 : 0.4 }}><QRCodeSVG value={qrUrl(it.id)} size={size} {...qrLogo(size)} /></Box>
       </Paper>
       {/* QR は販売開始を記録すると自動で公開になる（ボタンはない）。加工した元の魚は、加工品のラベルの QR で公開する */}
       {it.qr === 'active'
@@ -680,7 +685,7 @@ function PrintSheet({ job, items }) {
         const root = rootOf(items, it.id)
         return (
           <div className="print-label" key={`${it.id}-${pack ?? 0}`}>
-            <QRCodeSVG value={qrUrl(it.id, pack)} size={88} />
+            <QRCodeSVG value={qrUrl(it.id, pack)} size={88} {...qrLogo(88)} />
             <div className="print-label-text">
               <div className="pl-brand">{BRAND.ja} {BRAND.en} · 気仙沼</div>
               <div className="pl-name">{it.name}</div>
@@ -1484,19 +1489,40 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
   const [customName, setCustomName] = useState(`${item.name} 加工品`)
   // ロット＝同じ規格のパックのまとまり。例：ロイン 20kg × 1個 を 4ロット、柵 400g × 45パック を 1ロット
   const small = item.kind === 'prod'
-  const [unit, setUnit] = useState(small ? 0.4 : 20)
-  const [perLot, setPerLot] = useState(small ? 10 : 1)
-  const [lotCount, setLotCount] = useState(small ? 1 : 4)
+  const parentKg = item.custody.lastKg ?? item.kg
+  const issuedKg = item.children.reduce((a, c) => a + items[c].kg, 0)
+  // 発行できる量 ＝ 元の重さ × 歩留まりの上限 − 発行済み（上限がなければ 元の重さ − 発行済み）
+  const roomOf = (p) => Math.max(0, Math.floor((parentKg * (p?.yield_max != null ? Number(p.yield_max) : 1) - issuedKg) * 100 + 1e-6) / 100)
+  // 最初の値は、発行できる量に収まるようにする
+  const defaultsFor = (p) => {
+    const room = roomOf(p)
+    if (small) {
+      const per = Math.max(1, Math.min(10, Math.floor(room / 0.4 + 1e-9)))
+      return { unit: 0.4, perLot: per, lotCount: 1 }
+    }
+    const u = room >= 20 ? 20 : Math.max(0.1, Math.floor(room * 10) / 10)
+    return { unit: u, perLot: 1, lotCount: Math.max(1, Math.min(4, Math.floor(room / u + 1e-9))) }
+  }
+  const init = defaultsFor(choices[0])
+  const [unit, setUnit] = useState(init.unit)
+  const [perLot, setPerLot] = useState(init.perLot)
+  const [lotCount, setLotCount] = useState(init.lotCount)
   const [photo, setPhoto] = useState(null)
   const [printAfter, setPrintAfter] = useState(true)
   const product = choices.find((p) => p.id === productId)
+  const room = roomOf(product)
+  const pickProduct = (p) => {
+    setProductId(p.id)
+    const d = defaultsFor(p)
+    setUnit(d.unit); setPerLot(d.perLot); setLotCount(d.lotCount)
+  }
   const n = Number(lotCount) || 0
   const q = Math.max(1, Math.trunc(Number(perLot) || 1))
   const u = Number(unit) || 0
   const lotKg = Math.round(q * u * 100) / 100
   const weights = Array.from({ length: n }, () => lotKg)
   const check = checkWeight({
-    parentKg: item.custody.lastKg ?? item.kg, childrenKg: item.children.map((c) => items[c].kg), newKg: weights,
+    parentKg, childrenKg: item.children.map((c) => items[c].kg), newKg: weights,
     yieldMin: product?.yield_min != null ? Number(product.yield_min) : null, yieldMax: product?.yield_max != null ? Number(product.yield_max) : null,
   })
   const ids = childIds(item.id, item.kind === 'ind', item.children.length, n)
@@ -1518,7 +1544,7 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
             ? (
               <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="sm">
                 {choices.map((p) => (
-                  <ChoiceCard key={p.id} checked={productId === p.id} onClick={() => setProductId(p.id)}>
+                  <ChoiceCard key={p.id} checked={productId === p.id} onClick={() => pickProduct(p)}>
                     <Text fw={600} size="sm" pr={24}>{p.name}</Text>
                     <Text size="xs" c="dimmed">{[p.storage, p.yield_min != null && `歩留まり ${Math.round(p.yield_min * 100)}〜${Math.round(p.yield_max * 100)}%`].filter(Boolean).join(' · ') || '—'}</Text>
                   </ChoiceCard>
@@ -1533,13 +1559,14 @@ function ProcessModal({ opened, onClose, item, items, products, busy, onSave }) 
         <Text size="sm" fw={600}>{n}ロット × {q}パック × {gram(u)} ＝ 合計 {check.total.toFixed(1)} kg（1ロット {lotKg} kg）</Text>
         {/* 親の重量に対して、子の合計がどれだけか */}
         <div>
-          <Group justify="space-between" mb={6}><Text size="sm" c="dimmed">合計 {check.total.toFixed(1)} kg ／ 親 {item.custody.lastKg ?? item.kg} kg</Text><Text size="sm" fw={700} c={check.ok ? undefined : 'red'}>{(check.ratio * 100).toFixed(0)}%</Text></Group>
+          {room <= 0 && <Alert radius="md" color="red" variant="light" icon={<IconAlertTriangle size={18} />} mb="sm">残りが足りません（発行済み {issuedKg.toFixed(1)} kg）</Alert>}
+          <Group justify="space-between" mb={6}><Text size="sm" c="dimmed">合計 {check.total.toFixed(1)} kg ／ 親 {parentKg} kg（発行できる残り {room.toFixed(1)} kg）</Text><Text size="sm" fw={700} c={check.ok ? undefined : 'red'}>{(check.ratio * 100).toFixed(0)}%</Text></Group>
           <Box h={10} style={{ borderRadius: 99, background: 'rgba(0,0,0,0.06)', overflow: 'hidden' }}>
-            <Box h="100%" w={`${pct}%`} style={{ borderRadius: 99, background: check.ok ? 'linear-gradient(90deg, #0a84ff, #64d2ff)' : 'var(--apple-red)', transition: 'width 250ms var(--ease-apple)' }} />
+            <Box h="100%" w={`${pct}%`} style={{ borderRadius: 99, background: check.ok ? 'linear-gradient(90deg, var(--mantine-primary-color-filled), var(--mantine-primary-color-4))' : 'var(--apple-red)', transition: 'width 250ms var(--ease-apple)' }} />
           </Box>
         </div>
         {check.issues.map((i) => (
-          <Alert key={i.message} radius="md" color={i.level === 'error' ? 'red' : i.level === 'warning' ? 'yellow' : 'apple'} variant="light" icon={<IconAlertTriangle size={18} />}>{i.message}</Alert>
+          <Alert key={i.message} radius="md" color={i.level === 'error' ? 'red' : i.level === 'warning' ? 'yellow' : undefined} variant="light" icon={<IconAlertTriangle size={18} />}>{i.message}</Alert>
         ))}
         <PhotoPicker value={photo} onChange={setPhoto} label="加工品の写真" hint="撮らなくても、水揚げ時の写真が消費者の画面に出ます" />
         <Checkbox checked={printAfter} onChange={(e) => setPrintAfter(e.currentTarget.checked)} size="md"
@@ -1755,7 +1782,7 @@ function LoginPage() {
     <div className="login-page">
       <div className="mgr-hero-glow" aria-hidden />
       <form className="login-card fadein" onSubmit={submit}>
-        <Center w={56} h={56} mx="auto" style={{ borderRadius: 16, background: 'linear-gradient(135deg, #0a84ff, #0071e3 55%, #34c759)' }}><IconFish size={30} color="white" /></Center>
+        <Center mx="auto"><LogoTile size={56} /></Center>
         <Group gap={8} justify="center" align="baseline" mt="md">
           <Title order={1} className="headline" fz={isMobile ? 30 : 34} style={{ letterSpacing: '0.04em' }}>{BRAND.ja}</Title>
           <Text fw={600} size="sm" c="dimmed" style={{ letterSpacing: '0.14em' }}>{BRAND.en}</Text>
@@ -1828,6 +1855,7 @@ function TabBar({ view, pane, onList, onRegister, onScan, onConsumer }) {
 }
 
 function App() {
+  const [look, setLook] = useLook()
   // QRから開いたときの ID。ログインした事業者が自分の見える範囲の魚を読んだら、管理画面の詳細を開いて消す
   const [qid, setQid] = useState(() => new URLSearchParams(location.search).get('id'))
   const isMobile = useIsMobile()
@@ -1888,7 +1916,7 @@ function App() {
   const onScanned = (id) => {
     if (!items?.[id]) return notifications.show({ color: 'red', message: `ID ${id} は見つかりません（登録されていないか、あなたの事業者が扱っていない魚です）` })
     setModal(null); setSel(id); setPane('detail')
-    notifications.show({ message: `QRを読み取りました：${items[id].name}`, color: 'apple' })
+    notifications.show({ message: `QRを読み取りました：${items[id].name}` })
   }
 
   const account = me
@@ -1901,6 +1929,8 @@ function App() {
         </Menu.Target>
         <Menu.Dropdown>
           <Menu.Label>{me.business?.name ?? '所属なし'}</Menu.Label>
+          <Menu.Item closeMenuOnClick={false} onClick={() => setLook(look === 'sea' ? 'classic' : 'sea')}
+            leftSection={<span className="look-dot" data-look={look === 'sea' ? 'classic' : 'sea'} />}>{look === 'sea' ? '画面の色：黒にする' : '画面の色：海にする'}</Menu.Item>
           <Menu.Item leftSection={<IconLogout size={16} />} onClick={signOut}>ログアウト</Menu.Item>
         </Menu.Dropdown>
       </Menu>
@@ -1921,7 +1951,7 @@ function App() {
       <AppShell.Header className="glass-nav" px={isMobile ? 'md' : 'xl'}>
         <Group h="100%" justify="space-between" wrap="nowrap" maw={1280} mx="auto">
           <Group gap={10} wrap="nowrap">
-            <Center w={32} h={32} style={{ borderRadius: 9, background: 'linear-gradient(135deg, #0a84ff, #0071e3 55%, #34c759)' }}><IconFish size={19} color="white" /></Center>
+            <LogoTile size={32} />
             <Group gap={6} align="baseline" wrap="nowrap">
               <Text fw={700} size="md" className="brand" style={{ letterSpacing: '0.04em' }}>{BRAND.ja}</Text>
               <Text fw={600} size="xs" className="brand brand-en" style={{ letterSpacing: '0.12em' }}>{BRAND.en}</Text>
@@ -1970,9 +2000,18 @@ function App() {
   )
 }
 
+// 見た目（look）に合わせて主の色を切り替える
+function Themed() {
+  const [look] = useLook()
+  const t = useMemo(() => ({ ...theme, primaryColor: look === 'sea' ? 'sea' : 'apple' }), [look])
+  return (
+    <MantineProvider theme={t}>
+      <Notifications position="top-center" />
+      <App />
+    </MantineProvider>
+  )
+}
+
 createRoot(document.getElementById('root')).render(
-  <MantineProvider theme={theme}>
-    <Notifications position="top-center" />
-    <App />
-  </MantineProvider>
+  <Themed />
 )

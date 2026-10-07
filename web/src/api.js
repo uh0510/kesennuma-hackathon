@@ -3,7 +3,6 @@
 //           消費者は QR の ID 1件分を public_trace で（販売開始で有効になったものだけ）
 // 書き込みはすべて record-event（Edge Function）を通す
 import { createClient } from '@supabase/supabase-js'
-import { ethers } from 'ethers'
 import { verifyChain, itemKey, sha256HexBytes } from './lib/hash.js'
 import { currentPosition, positionError } from './lib/geo.js'
 
@@ -16,6 +15,26 @@ const EXPLORER = import.meta.env.VITE_EXPLORER_URL ?? 'https://sepolia.basescan.
 export const explorerTx = (tx) => `${EXPLORER}/tx/${tx}`
 export const explorerAddress = (a) => `${EXPLORER}/address/${a}`
 export const chainEnabled = Boolean(REGISTRY && /^0x[0-9a-fA-F]{40}$/.test(REGISTRY) && RPC)
+const ZERO32 = '0x' + '0'.repeat(64)
+
+// チェーンの読み取り（eth_call）。ライブラリを使わず JSON-RPC を直接呼ぶ（画面を軽くするため）
+// selector は関数名の keccak256 の先頭4バイト：latestHash(bytes32)＝0x61a7e741、issuerOf(bytes32)＝0x8e304e16
+async function callRegistry(selector, key) {
+  const res = await fetch(RPC, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: REGISTRY, data: selector + key.slice(2) }, 'latest'] }),
+  })
+  const j = await res.json()
+  if (j.error || typeof j.result !== 'string') throw new Error(j.error?.message ?? 'チェーンを読めませんでした')
+  return j.result.toLowerCase()
+}
+
+// チェーン上のそのIDの最新の指紋（未登録なら null）
+export async function latestHashOnChain(itemId) {
+  if (!chainEnabled) return null
+  const h = await callRegistry('0x61a7e741', await itemKey(itemId))
+  return h === ZERO32 ? null : h
+}
 
 // ---- ログイン ----
 export async function signIn(email, password) {
@@ -73,9 +92,8 @@ export async function fetchTrace(id) {
 // チェーン上でそのIDを発行した事業者のアドレス（発行されていなければ null）
 async function issuerOnChain(id) {
   if (!chainEnabled) return null
-  const reg = new ethers.Contract(REGISTRY, ['function issuerOf(bytes32) view returns (address)'], new ethers.JsonRpcProvider(RPC))
-  const a = await reg.issuerOf(await itemKey(id))
-  return a === ethers.ZeroAddress ? null : a
+  const r = await callRegistry('0x8e304e16', await itemKey(id))
+  return r === ZERO32 ? null : '0x' + r.slice(-40)
 }
 
 // 漁船が実際に漁をした場所と入港した港（Global Fishing Watch の公開データ。vessel-activity が船マスタから船を引いて問い合わせる）
@@ -235,16 +253,14 @@ export async function verifyPhotos(events) {
 }
 
 // DBの記録からハッシュを計算し直す。チェーンにつながっていれば latestHash とも照合する
-const REGISTRY_ABI = ['function latestHash(bytes32) view returns (bytes32)']
 // chain：'match'＝チェーンと一致 / 'none'＝チェーン未記録（つなぐ前の記録） / 'pending'＝最新の記録がまだチェーンに届いていない
 //        'mismatch'＝チェーンの指紋がどの記録とも合わない（改ざんの疑い） / 'off'＝チェーン未接続
 export async function verifyItem(events) {
   if (events.length === 0) return { ok: false, onchain: false, chain: 'off', reason: '記録がありません' }
   const db = await verifyChain(events, events.at(-1).hash) // DB の中で指紋の鎖がつながっているか
   if (!chainEnabled) return { ...db, onchain: false, chain: 'off' }
-  const reg = new ethers.Contract(REGISTRY, REGISTRY_ABI, new ethers.JsonRpcProvider(RPC))
-  const latest = (await reg.latestHash(await itemKey(events[0].item_id))).toLowerCase()
-  if (latest === ethers.ZeroHash) return { ...db, onchain: false, chain: 'none' }
+  const latest = await latestHashOnChain(events[0].item_id)
+  if (!latest) return { ...db, onchain: false, chain: 'none' }
   if (latest === events.at(-1).hash.toLowerCase()) return { ...db, onchain: true, chain: 'match' }
   if (events.some((e) => e.hash.toLowerCase() === latest)) return { ...db, onchain: false, chain: 'pending' }
   return { ...db, ok: false, onchain: false, chain: 'mismatch' }

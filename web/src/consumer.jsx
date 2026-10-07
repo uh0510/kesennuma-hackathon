@@ -2,16 +2,18 @@
 // 黒い背景に大きな文字、旅の地図、スクロールに合わせて現れる道のり、という Apple の製品ページ風の構成
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Select, Anchor } from '@mantine/core'
-import { motion, useInView, useScroll, useSpring, animate, AnimatePresence } from 'motion/react'
+import { motion, useInView, useScroll, useSpring, animate, AnimatePresence, useReducedMotion } from 'motion/react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
 import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll, useVesselActivity, useVesselActivities } from './model.js'
-import { explorerTx, explorerAddress } from './api.js'
+import { explorerAddress } from './api.js'
 import { checkAis } from './lib/ais.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
 import { BRAND } from './brand.js'
+import { ProofLab } from './proof.jsx'
+import { useLook, cssVar } from './theme.js'
 
 // 地図に置く地点。海域は正確な漁獲地点ではなく、海域の代表地点（画面にもそう書く）
 const AREA_POINTS = {
@@ -73,10 +75,30 @@ function CountUp({ value, decimals = 0, suffix = '' }) {
   return <span ref={ref}>{shown.toLocaleString('ja-JP', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}{suffix}</span>
 }
 
-// 改ざん検証の結果（チェックマークが描かれて出る）
+// 改ざん検証の結果。sea：朱のはんこ「検」が押される（合わないときは灰色の欠けた印）／classic：チェックマークが描かれる
 function Seal({ verify, t }) {
+  const [look] = useLook()
   const state = verify === null ? 'wait' : verify.ok ? 'ok' : 'ng'
   const color = { wait: '#636366', ok: '#30d158', ng: '#ff453a' }[state]
+  const reduce = useReducedMotion()
+  if (look === 'sea') return (
+    <motion.div className="seal seal-sea glass-dark" data-state={state} initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6, ease, delay: 0.35 }}>
+      <motion.div key={state} className="hanko" data-state={state} aria-hidden
+        initial={state === 'wait' || reduce ? false : { scale: 1.9, opacity: 0, rotate: -20 }}
+        animate={{ scale: 1, opacity: 1, rotate: state === 'ng' ? 4 : -8 }}
+        transition={{ type: 'spring', stiffness: 520, damping: 18, delay: 0.75 }}>
+        {state === 'ng' ? '!' : state === 'ok' ? '検' : ''}
+      </motion.div>
+      <div>
+        <div className="seal-title">{state === 'wait' ? t.sealWait : state === 'ok' ? t.sealOk : t.sealNg}</div>
+        <div className="seal-sub">
+          {state === 'ok' && t.sealOkSub(verify.count)}
+          {state === 'ng' && t.sealNgSub}
+          {state === 'wait' && t.sealWaitSub}
+        </div>
+      </div>
+    </motion.div>
+  )
   return (
     <motion.div className="seal glass-dark" initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6, ease, delay: 0.35 }}>
       <div className="seal-ring" style={{ '--c': color }}>
@@ -133,13 +155,17 @@ function unwrap(points) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 // 0 → 1 を ms かけて進める（毎フレーム onUpdate。stop() が true を返したらやめる）
 const smooth = (x) => (x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2)
-function tween(ms, onUpdate, { ease = smooth, stop = () => false } = {}) {
+// paused() が true のあいだは時間を進めない
+function tween(ms, onUpdate, { ease = smooth, stop = () => false, paused = () => false } = {}) {
   return new Promise((resolve) => {
-    const t0 = performance.now()
+    let last = performance.now(), elapsed = 0
     // 画面の描き替えを待たずにタイマーで進める（1秒に約30回。地図は setData のたびに描き直す）
     const step = () => {
       if (stop()) return resolve()
-      const x = Math.min(1, (performance.now() - t0) / ms)
+      const now = performance.now()
+      if (!paused()) elapsed += now - last
+      last = now
+      const x = Math.min(1, elapsed / ms)
       onUpdate(ease(x))
       if (x < 1) setTimeout(step, 33)
       else resolve()
@@ -152,6 +178,7 @@ const day = (s) => new Date(s).toISOString().slice(0, 10)
 // 旅の地図（映像）：地球儀 → 漁をした海で、船の位置の記録が日付の順に灯る → 寄った港をたどる航海 → 水揚げ港・加工場・店へ飛ぶ → 全体
 // 画面に入ったら1回再生し、終わったら「もう一度見る」。船の位置の記録がない船は、海域の代表地点から始める
 function JourneyMap({ stops, t, ais }) {
+  const [look] = useLook()
   const box = useRef(null)
   const mapRef = useRef(null)
   const inView = useInView(box, { once: true, margin: '-120px' })
@@ -160,6 +187,15 @@ function JourneyMap({ stops, t, ais }) {
   const [cap, setCap] = useState(null) // 映像の字幕 { phase, main, sub }
   const [playing, setPlaying] = useState(false)
   const [run, setRun] = useState(0) // 再生の回数（もう一度見る）
+  const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(false)
+  const skipRef = useRef(null) // 再生中だけ入る：押すと最後の全体表示へ飛ぶ
+  const reduce = useReducedMotion()
+  const togglePause = () => {
+    pausedRef.current = !pausedRef.current
+    setPaused(pausedRef.current)
+    if (pausedRef.current) mapRef.current?.stop()
+  }
 
   useEffect(() => {
     // WebGL が使えないブラウザでは地図を作れない。画面全体を落とさず、代わりの図を出す
@@ -185,16 +221,26 @@ function JourneyMap({ stops, t, ais }) {
     })
     map.on('load', () => {
       const empty = { type: 'FeatureCollection', features: [] }
+      const accent = cssVar(box.current, '--accent', '#64d2ff'), strong = cssVar(box.current, '--accent-strong', '#0a84ff')
+      // sea：海と陸の色を夜の湾の藍に寄せる（地図の元の色は黒っぽい灰色）
+      if (look === 'sea') {
+        for (const l of map.getStyle().layers) {
+          try {
+            if (l.type === 'background') map.setPaintProperty(l.id, 'background-color', '#0a2230')
+            else if (l.type === 'fill' && /water|ocean|sea/.test(l.id)) map.setPaintProperty(l.id, 'fill-color', '#04131d')
+          } catch { /* 色を変えられない層はそのまま */ }
+        }
+      }
       map.addSource('ais-fishing', { type: 'geojson', data: empty })
       map.addLayer({ id: 'ais-glow', type: 'circle', source: 'ais-fishing', filter: ['<=', ['get', 't'], 0],
         paint: { 'circle-radius': 9, 'circle-color': '#ff9f0a', 'circle-opacity': 0.18, 'circle-blur': 1 } })
       map.addLayer({ id: 'ais-fishing', type: 'circle', source: 'ais-fishing', filter: ['<=', ['get', 't'], 0],
         paint: { 'circle-radius': 3.2, 'circle-color': '#ff9f0a', 'circle-opacity': 0.9 } })
       map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } })
-      map.addLayer({ id: 'route-glow', type: 'line', source: 'route', paint: { 'line-color': '#0a84ff', 'line-width': 10, 'line-blur': 8, 'line-opacity': 0.55 }, layout: { 'line-cap': 'round' } })
-      map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#64d2ff', 'line-width': 3 }, layout: { 'line-cap': 'round', 'line-join': 'round' } })
+      map.addLayer({ id: 'route-glow', type: 'line', source: 'route', paint: { 'line-color': strong, 'line-width': 10, 'line-blur': 8, 'line-opacity': 0.55 }, layout: { 'line-cap': 'round' } })
+      map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': accent, 'line-width': 3 }, layout: { 'line-cap': 'round', 'line-join': 'round' } })
       map.addSource('head', { type: 'geojson', data: empty })
-      map.addLayer({ id: 'head', type: 'circle', source: 'head', paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': '#64d2ff', 'circle-stroke-width': 3 } })
+      map.addLayer({ id: 'head', type: 'circle', source: 'head', paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': accent, 'circle-stroke-width': 3 } })
       const wide = box.current.clientWidth > 700
       // ラベルの出し方：右・左・左下（スマホでは横に並べると重なるので左下）。点の中心が地点に重なるよう基準をずらす
       const PLACE = { right: ['left', [-7, 0]], left: ['right', [7, 0]], 'below-left': ['top-right', [7, -7]], below: ['top', [0, -7]] }
@@ -203,8 +249,8 @@ function JourneyMap({ stops, t, ais }) {
         const el = document.createElement('div')
         el.className = `map-pin ${side}`
         const lines = s.lines ?? [{ label: s.label, sub: s.sub }]
-        el.innerHTML = `<span class="dot"></span><span class="tag">${lines.map((l) => `<b>${esc(l.label)}</b>${l.sub ? `<small>${esc(l.sub)}</small>` : ''}`).join('')}</span>`
-        // スマホでは名札を隠して丸だけ。押すと開く（もう一度押すと閉じる。ほかの地点は閉じる）
+        el.innerHTML = `<span class="dot">${i + 1}</span><span class="tag">${lines.map((l) => `<b>${esc(l.label)}</b>${l.sub ? `<small>${esc(l.sub)}</small>` : ''}`).join('')}</span>`
+        // 名札は再生中の地点だけ。ほかは番号の丸だけで、押すと開く（もう一度押すと閉じる。ほかの地点は閉じる）
         el.addEventListener('click', () => {
           const open = !el.classList.contains('open')
           box.current?.querySelectorAll('.map-pin.open').forEach((p) => p.classList.remove('open'))
@@ -220,7 +266,7 @@ function JourneyMap({ stops, t, ais }) {
       setReady(false)
       try { map.remove() } catch { /* 片付け中のエラーは無視してよい */ }
     }
-  }, [stops.map((s) => `${s.at.join()}:${s.label}:${s.sub}`).join('|')])
+  }, [stops.map((s) => `${s.at.join()}:${s.label}:${s.sub}`).join('|'), look])
 
   // 再生：画面に入ったら1回。船の位置の記録が届くのを少しだけ待つ（届かなければ、ないものとして始める）
   useEffect(() => {
@@ -228,17 +274,23 @@ function JourneyMap({ stops, t, ais }) {
     if (ais === null && run === 0) return // 読み込み中
     const map = mapRef.current
     if (!map?.style) return
-    let alive = true
-    const ok = () => alive && mapRef.current === map && map.style
+    let alive = true, skipped = false
+    pausedRef.current = false; setPaused(false)
+    const live = () => alive && mapRef.current === map && map.style
+    const ok = () => live() && !skipped
+    const isPaused = () => pausedRef.current
+    // 一時停止のあいだは待つ
+    const hold = async () => { while (isPaused() && ok()) await sleep(120) }
+    const nap = async (ms) => { await hold(); await tween(ms, () => {}, { stop: () => !ok(), paused: isPaused }) }
     // カメラを動かして、止まるまで待つ。動かなかった・失敗したときも、決めた時間で先へ進む
-    const move = (fn, ...args) => new Promise((r) => {
+    const move = async (fn, ...args) => { await hold(); return new Promise((r) => {
       if (!ok()) return r()
       const ms = (args.at(-1)?.duration ?? 0) + 800
       const done = () => { clearTimeout(timer); map.off('moveend', done); r() }
       const timer = setTimeout(done, ms)
       map.on('moveend', done)
       try { map[fn](...args) } catch (e) { console.error('地図のカメラ', e); done() }
-    })
+    }) }
     const pins = [...box.current.querySelectorAll('.map-pin')]
     const setRoute = (coords) => map.getSource('route')?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords } })
     const setHead = (p) => map.getSource('head')?.setData(p ? { type: 'Feature', geometry: { type: 'Point', coordinates: p } } : { type: 'FeatureCollection', features: [] })
@@ -249,28 +301,67 @@ function JourneyMap({ stops, t, ais }) {
       setRoute([...base, ...path.slice(0, n)])
       setHead(path[n - 1])
       if (follow) map.jumpTo({ center: path[n - 1] })
-    }, { stop: () => !ok() })
+    }, { stop: () => !ok(), paused: isPaused })
+    const current = (i) => pins.forEach((p, k) => p.classList.toggle('cur', k === i))
+
+    // 道すじは先に全部決めておく（スキップしたときに最後の形をすぐ出せるように）
+    const fishing = (ais?.linked ? ais.fishing : []).filter((p) => p.lat != null && p.lon != null)
+      .map((p) => ({ ...p, ms: new Date(p.start).getTime() })).sort((a, b) => a.ms - b.ms)
+    const area = stops[0].at
+    const pts = unwrap([area, ...fishing.map((p) => [p.lon, p.lat])]).slice(1)
+    const land = stops[1]
+    const lastFish = pts.at(-1) ?? area
+    const ports = (ais?.linked ? ais.ports : []).filter((p) => p.lat != null && p.lon != null && (!fishing.length || new Date(p.start).getTime() >= fishing.at(-1).ms))
+    const seq = []
+    for (const p of ports) if (seq.at(-1)?.name !== p.name) seq.push(p)
+    const via = unwrap([lastFish, ...seq.map((p) => [p.lon, p.lat]), land?.at ?? lastFish])
+    const voyage = land ? via.slice(1).flatMap((p, i) => arc(via[i], p, 40).slice(i ? 1 : 0)) : []
+    // 水揚げ港から先の区間：前の線の最後の点から（経度のそろえ方を線全体で同じにする）
+    const legs = []
+    for (let i = 2, tail = voyage.at(-1); i < stops.length; i++) {
+      const leg = unwrap([tail ?? stops[i - 1].at, stops[i].at])
+      legs[i] = arc(leg[0], leg[1], 40)
+      tail = legs[i].at(-1)
+    }
+
+    // 最後の全体表示（スキップ・動きを減らす設定のときは、ここへすぐ飛ぶ）
+    const finish = (animate) => {
+      if (!live()) return
+      const base = [...voyage, ...legs.filter(Boolean).flat()]
+      setHead(null); setCap(null); current(-1)
+      setRoute(base); showUpTo(Infinity)
+      // 地球の半分以上をまたぐ旅（大西洋 → パナマ → 日本）は地球儀だと裏側に隠れるので、全体は平らな地図で、太平洋をまたいで続けて見せる
+      try { map.setProjection({ type: 'mercator' }) } catch { /* そのまま */ }
+      const all = new maplibregl.LngLatBounds()
+      ;[...pts, ...base].forEach((p) => all.extend(p))
+      if (!base.length) stops.forEach((s) => all.extend(s.at))
+      const wide = box.current.clientWidth > 700
+      try {
+        map.fitBounds(all, { padding: wide ? { top: 120, bottom: 90, left: 120, right: 120 } : { top: 120, bottom: 70, left: 40, right: 40 }, pitch: 0, bearing: 0, maxZoom: 7, duration: animate ? 2600 : 0 })
+      } catch (e) { console.error('地図のカメラ', e) }
+      pins.forEach((p) => p.classList.add('on'))
+    }
+    skipRef.current = () => { skipped = true; pausedRef.current = false; setPaused(false); map.stop(); finish(false); setPlaying(false) }
 
     ;(async () => {
       setPlaying(true)
-      try { map.setProjection({ type: 'globe' }) } catch { /* 平らな地図のまま */ }
       pins.forEach((p) => p.classList.remove('on'))
+      // 端末が「動きを減らす」設定のときは、最初から全体を出す
+      if (reduce) { finish(false); return }
+      try { map.setProjection({ type: 'globe' }) } catch { /* 平らな地図のまま */ }
       setRoute([]); setHead(null); showUpTo(0)
-      const fishing = (ais?.linked ? ais.fishing : []).filter((p) => p.lat != null && p.lon != null)
-        .map((p) => ({ ...p, ms: new Date(p.start).getTime() })).sort((a, b) => a.ms - b.ms)
-      const area = stops[0].at
-      const pts = unwrap([area, ...fishing.map((p) => [p.lon, p.lat])]).slice(1)
       map.getSource('ais-fishing')?.setData({ type: 'FeatureCollection', features: fishing.map((p, i) => ({ type: 'Feature', properties: { t: p.ms }, geometry: { type: 'Point', coordinates: pts[i] } })) })
 
       // 1. 地球儀から、漁をした海へ
       setCap({ phase: t.replayFishing, main: stops[0].sub ?? stops[0].label })
       await move('jumpTo', { center: area, zoom: box.current.clientWidth < 600 ? 0.2 : 0.8, pitch: 0, bearing: 0 })
-      await sleep(600)
+      await nap(600)
+      if (!ok()) return
       const fb = new maplibregl.LngLatBounds(area, area)
       pts.forEach((p) => fb.extend(p))
       await move('fitBounds', fb, { padding: 90, maxZoom: 5, pitch: 25, duration: 2600 })
       if (!ok()) return
-      pins[0]?.classList.add('on')
+      pins[0]?.classList.add('on'); current(0)
 
       // 2. 船の位置の記録が、日付の順に灯る
       if (fishing.length) {
@@ -279,21 +370,16 @@ function JourneyMap({ stops, t, ais }) {
           const v = t0 + (t1 + 1 - t0) * x
           showUpTo(v)
           setCap({ phase: t.replayFishing, main: day(v), sub: t.replayFishCount(fishing.filter((p) => p.ms <= v).length) })
-        }, { ease: (x) => x, stop: () => !ok() })
-        await sleep(700)
+        }, { ease: (x) => x, stop: () => !ok(), paused: isPaused })
+        await nap(700)
+        if (!ok()) return
       }
 
       // 3. 航海：漁の最後の地点から、寄った港をたどって水揚げ港へ
-      const land = stops[1]
-      const lastFish = pts.at(-1) ?? area
-      const ports = (ais?.linked ? ais.ports : []).filter((p) => p.lat != null && p.lon != null && (!fishing.length || new Date(p.start).getTime() >= fishing.at(-1).ms))
-      const seq = []
-      for (const p of ports) if (seq.at(-1)?.name !== p.name) seq.push(p)
-      const via = unwrap([lastFish, ...seq.map((p) => [p.lon, p.lat]), land?.at ?? lastFish])
-      const voyage = via.slice(1).flatMap((p, i) => arc(via[i], p, 40).slice(i ? 1 : 0))
       if (land && voyage.length > 1) {
         setCap({ phase: t.replayVoyage, main: seq.length ? seq.map((p) => p.name).join(' → ') : land.label })
         await move('easeTo', { center: voyage[0], zoom: 2.4, pitch: 30, duration: 1200 })
+        if (!ok()) return
         await draw([], voyage, Math.min(9000, 3500 + seq.length * 900), true)
         if (!ok()) return
       }
@@ -303,34 +389,26 @@ function JourneyMap({ stops, t, ais }) {
       for (let i = 1; i < stops.length; i++) {
         const s = stops[i]
         if (i > 1) {
-          // 線の続き：前の線の最後の点から（経度のそろえ方を線全体で同じにする）
-          const leg = unwrap([base.at(-1) ?? stops[i - 1].at, s.at])
-          const path = arc(leg[0], leg[1], 40)
-          await move('flyTo', { center: path[Math.floor(path.length / 2)], zoom: Math.max(4, Math.min(8, 10 - Math.log2(1 + km(leg[0], leg[1]) / 20))), pitch: 35, bearing: -15 + i * 12, duration: 1600 })
+          const path = legs[i]
+          const mid = path[Math.floor(path.length / 2)]
+          await move('flyTo', { center: mid, zoom: Math.max(4, Math.min(8, 10 - Math.log2(1 + km(path[0], path.at(-1)) / 20))), pitch: 35, bearing: -15 + i * 12, duration: 1600 })
+          if (!ok()) return
           await draw(base, path, 1500, false)
           base = [...base, ...path]
         }
         if (!ok()) return
         setCap({ phase: i === 1 ? t.replayLanded : t.replayStop, main: s.label, sub: s.sub })
-        pins[i]?.classList.add('on')
+        pins[i]?.classList.add('on'); current(i)
         await move('flyTo', { center: s.at, zoom: 9.5, pitch: 40, bearing: -20 + i * 12, duration: 2000 })
-        await sleep(1300)
+        await nap(1300)
+        if (!ok()) return
       }
 
       // 5. 全体を見渡す
       if (!ok()) return
-      setHead(null)
-      // 地球の半分以上をまたぐ旅（大西洋 → パナマ → 日本）は地球儀だと裏側に隠れるので、全体は平らな地図で、太平洋をまたいで続けて見せる
-      try { map.setProjection({ type: 'mercator' }) } catch { /* そのまま */ }
-      const all = new maplibregl.LngLatBounds()
-      ;[...pts, ...base].forEach((p) => all.extend(p))
-      if (!base.length) stops.forEach((s) => all.extend(s.at))
-      const wide = box.current.clientWidth > 700
-      setCap(null)
-      await move('fitBounds', all, { padding: wide ? { top: 140, bottom: 140, left: 220, right: 220 } : { top: 130, bottom: 130, left: 50, right: 50 }, pitch: 0, bearing: 0, maxZoom: 7, duration: 2600 })
-      pins.forEach((p) => p.classList.add('on'))
-    })().finally(() => alive && setPlaying(false))
-    return () => { alive = false }
+      finish(true)
+    })().finally(() => { if (alive) { skipRef.current = null; setPlaying(false) } })
+    return () => { alive = false; skipRef.current = null }
   }, [ready, inView, ais === null, run])
 
   if (failed) return <MapFallback stops={stops} t={t} />
@@ -347,6 +425,12 @@ function JourneyMap({ stops, t, ais }) {
         )}
       </AnimatePresence>
       {ready && !playing && <button type="button" className="replay-btn" onClick={() => setRun((n) => n + 1)}>{t.replayAgain}</button>}
+      {ready && playing && (
+        <div className="replay-ctrl">
+          <button type="button" className="replay-btn" onClick={togglePause} aria-pressed={paused}>{paused ? t.replayResume : t.replayPause}</button>
+          <button type="button" className="replay-btn" onClick={() => skipRef.current?.()}>{t.replaySkip}</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -499,26 +583,26 @@ function FishSvg({ shape, segs, label, packLabel }) {
     <svg viewBox={shape.vb} className="fish-svg" role="img" aria-label={label}>
       <defs>
         <clipPath id={`${id}-clip`}><path d={shape.body} /></clipPath>
-        <linearGradient id={`${id}-cur`} x1="0" x2="1"><stop offset="0" stopColor="#0a84ff" /><stop offset="1" stopColor="#64d2ff" /></linearGradient>
+        <linearGradient id={`${id}-cur`} x1="0" x2="1"><stop offset="0" style={{ stopColor: 'var(--accent-strong)' }} /><stop offset="1" style={{ stopColor: 'var(--accent)' }} /></linearGradient>
         <pattern id={`${id}-hatch`} width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <rect width="8" height="8" fill="#1c1c1e" /><rect width="4" height="8" fill="#2c2c2e" />
+          <rect width="8" height="8" style={{ fill: 'var(--surface)' }} /><rect width="4" height="8" style={{ fill: 'var(--surface-2)' }} />
         </pattern>
       </defs>
-      {shape.fins.map((d) => <path key={d} d={d} fill="#2c2c2e" stroke="rgba(255,255,255,0.18)" strokeWidth="1" />)}
+      {shape.fins.map((d) => <path key={d} d={d} style={{ fill: 'var(--surface-2)' }} stroke="rgba(255,255,255,0.18)" strokeWidth="1" />)}
       <g clipPath={`url(#${id}-clip)`}>
-        <rect x={shape.x0 - 20} y="0" width={W + 40} height="160" fill="#1c1c1e" />
+        <rect x={shape.x0 - 20} y="0" width={W + 40} height="160" style={{ fill: 'var(--surface)' }} />
         {parts.map((p, i) => (
           <rect key={i} className="fish-seg" style={{ animationDelay: `${0.15 + i * 0.12}s` }} x={p.x} y="0" width={p.w + 0.5} height="160"
-            fill={p.rest ? `url(#${id}-hatch)` : p.current ? `url(#${id}-cur)` : p.lot ? 'rgba(10, 132, 255, 0.35)' : p.fill ?? '#3a3a3c'} />
+            style={{ fill: p.rest ? `url(#${id}-hatch)` : p.current ? `url(#${id}-cur)` : p.lot ? 'rgba(var(--accent-strong-rgb), 0.35)' : p.fill ?? 'var(--surface-3)' }} />
         ))}
-        {parts.slice(1).map((p, i) => <line key={i} x1={p.x} x2={p.x} y1="0" y2="160" stroke="#000" strokeWidth="2.5" />)}
+        {parts.slice(1).map((p, i) => <line key={i} x1={p.x} x2={p.x} y1="0" y2="160" style={{ stroke: 'var(--bg)' }} strokeWidth="2.5" />)}
       </g>
       <path d={shape.body} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
-      <circle cx={shape.eye[0]} cy={shape.eye[1]} r="4.5" fill="#000" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" />
+      <circle cx={shape.eye[0]} cy={shape.eye[1]} r="4.5" style={{ fill: 'var(--bg)' }} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" />
       {pi >= 0 && packLabel && (
         <g className="fish-pack-mark">
-          <path d={`M${parts[pi].x + parts[pi].w / 2 - 6},-2 L${parts[pi].x + parts[pi].w / 2 + 6},-2 L${parts[pi].x + parts[pi].w / 2},8 Z`} fill="#64d2ff" />
-          <text x={parts[pi].x + parts[pi].w / 2} y="-8" textAnchor="middle" fill="#64d2ff" fontSize="13" fontWeight="700">{packLabel}</text>
+          <path d={`M${parts[pi].x + parts[pi].w / 2 - 6},-2 L${parts[pi].x + parts[pi].w / 2 + 6},-2 L${parts[pi].x + parts[pi].w / 2},8 Z`} style={{ fill: 'var(--accent)' }} />
+          <text x={parts[pi].x + parts[pi].w / 2} y="-8" textAnchor="middle" style={{ fill: 'var(--accent)' }} fontSize="13" fontWeight="700">{packLabel}</text>
         </g>
       )}
     </svg>
@@ -593,7 +677,20 @@ function Family({ items, it, t, lang }) {
   )
 }
 
+// スマホの上の帯（theme-color）を画面の背景の色に合わせる。離れるときは元に戻す
+function useBarColor() {
+  const [look] = useLook()
+  useEffect(() => {
+    const m = document.querySelector('meta[name="theme-color"]')
+    if (!m) return
+    const prev = m.content
+    m.content = look === 'sea' ? '#04131d' : '#000000'
+    return () => { m.content = prev }
+  }, [look])
+}
+
 export function ConsumerView({ items, sel, setSel, demo }) {
+  useBarColor()
   const [lang, setLang] = useLang()
   const all = Object.values(items)
   const leaves = all.filter((x) => x.children.length === 0)
@@ -606,13 +703,14 @@ export function ConsumerView({ items, sel, setSel, demo }) {
 
 // QR を読んだが見せられないとき（販売前・ID がない・記録が消された疑い）
 export function ConsumerNotice({ status, erased }) {
+  useBarColor()
   const [lang, setLang] = useLang()
   const t = STR[lang]
   const [title, lead] = { inactive: [t.inactiveTitle, t.inactiveLead], erased: [t.erasedTitle, t.erasedLead] }[status] ?? [t.missingTitle, t.missingLead]
   return (
     <div className="story">
       <div className="story-notice">
-        <LangToggle lang={lang} setLang={setLang} />
+        <div className="hero-toggles"><LookToggle lang={lang} /><LangToggle lang={lang} setLang={setLang} /></div>
         <div className="eyebrow-dark">{BRAND.ja} {BRAND.en}</div>
         {status === 'erased' && <div className="notice-alert" aria-hidden>!</div>}
         <h1 className="story-h2">{title}</h1>
@@ -630,6 +728,19 @@ export function ConsumerNotice({ status, erased }) {
 }
 
 // 日本語と英語の切り替え
+// 見た目の切り替え：海（気仙沼）／黒
+function LookToggle({ lang }) {
+  const [look, setLook] = useLook()
+  const label = lang === 'en' ? { sea: 'Sea', classic: 'Black' } : { sea: '海', classic: '黒' }
+  return (
+    <div className="lang-toggle look-toggle" role="group" aria-label={lang === 'en' ? 'Color' : '色'}>
+      {['sea', 'classic'].map((v) => (
+        <button key={v} type="button" data-active={look === v || undefined} onClick={() => setLook(v)}><span className="look-sw" data-look={v} aria-hidden />{label[v]}</button>
+      ))}
+    </div>
+  )
+}
+
 function LangToggle({ lang, setLang }) {
   return (
     <div className="lang-toggle" role="group" aria-label="Language">
@@ -653,7 +764,6 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const root = origins[0] ?? main[0]
   const ships = [...new Set(origins.map((o) => o.info.shipName).filter(Boolean))]
   const verify = useVerifyAll(chain)
-  const [proofOpen, setProofOpen] = useState(false)
   const journeyRef = useRef(null)
   const { scrollYProgress } = useScroll({ target: journeyRef, offset: ['start 70%', 'end 60%'] })
   const progress = useSpring(scrollYProgress, { stiffness: 120, damping: 30 })
@@ -732,6 +842,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
                 data={all.map((p) => ({ value: p.id, label: `${tr(p.name)}（${p.id}）` }))} />
             </div>
           )}
+          <LookToggle lang={lang} />
           <LangToggle lang={lang} setLang={setLang} />
         </div>
         <div className={heroPhoto ? 'hero-grid' : undefined}>
@@ -765,6 +876,14 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
         <MapBoundary stops={stops} t={t}><JourneyMap stops={stops} t={t} ais={ais} /></MapBoundary>
         <div className="map-note"><span className="only-mobile">{t.mapTapHint} ・ </span>{t.mapNote}{ais?.linked ? ` ・ ${t.aisMapNote}` : ''}</div>
       </section>
+      {/* 地図の番号の一覧（地図の上には番号の丸だけを置き、名前はここで読む） */}
+      <ol className="map-legend">
+        {stops.map((s, i) => (
+          <li key={i}><span className="map-legend-no">{i + 1}</span>
+            <div>{(s.lines ?? [s]).map((l) => <p key={l.label}><b>{l.label}</b>{l.sub && <small>{l.sub}</small>}</p>)}</div>
+          </li>
+        ))}
+      </ol>
 
       {/* ---- 船の位置の記録との照らし合わせ ---- */}
       {lot ? <MixSources origins={origins} inputKg={lot.info.inputKg} t={t} lang={lang} /> : <AisCheck root={root} ais={ais} t={t} lang={lang} />}
@@ -794,36 +913,20 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       {/* ---- 1尾から生まれた加工品 ---- */}
       <Family items={items} it={it} t={t} lang={lang} />
 
-      {/* ---- 記録の証明（押したときだけ開く） ---- */}
+      {/* ---- 記録の証明：その場で計算し直し、書き換えも試せる ---- */}
       <section className="story-section proof-section">
-        <button type="button" className="proof-toggle" onClick={() => setProofOpen((v) => !v)} aria-expanded={proofOpen}>
-          <span>{t.proofToggle}</span><small>{t.proofFor}</small><span className="proof-chevron" data-open={proofOpen || undefined}>⌄</span>
-        </button>
-        <AnimatePresence initial={false}>
-          {proofOpen && (
-            <motion.div key="proof" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.4, ease }} style={{ overflow: 'hidden' }}>
-              <p className="story-lead">
-                {t.proofLead}{lang === 'en' ? ' ' : ''}
-                {verify?.onchain ? t.proofOnchain
-                  : verify?.chains?.includes('pending') ? t.proofPending
-                    : verify?.chains?.includes('none') ? t.proofNone
-                      : t.proofOff}
-              </p>
-              <div className="hash-chain">
-          {allEvents.map((e, i) => (
-            <motion.div key={e.id} className="hash-block glass-dark" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: 0.15 + Math.min(i, 8) * 0.06, ease }}>
-              <div className="hb-type">{EV[e.type] ? (lang === 'en' ? EV[e.type].en : EV[e.type].ja) : e.type === 'process' ? t.evProcess : e.type === 'activate' ? t.evActivate : e.type}</div>
-              <div className="hb-time">{lang === 'en' ? when(e.item.rawEvents.find((r) => r.id === e.id)?.created_at) : e.t}</div>
-              <code className="hb-hash">{shortHash(e.hash)}</code>
-              {e.tx
-                ? <a className="hb-tx" href={explorerTx(e.tx)} target="_blank" rel="noreferrer"><IconLink size={12} /> {t.viewOnChain}</a>
-                : <span className="hb-tx muted">{t.notOnChain}</span>}
-            </motion.div>
-          ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <motion.div {...reveal}>
+          <div className="eyebrow-dark">PROOF</div>
+          <h2 className="story-h2">{t.proofTitle}</h2>
+          <p className="story-lead">
+            {t.proofLead}{lang === 'en' ? ' ' : ''}
+            {verify?.onchain ? t.proofOnchain
+              : verify?.chains?.includes('pending') ? t.proofPending
+                : verify?.chains?.includes('none') ? t.proofNone
+                  : verify?.chains?.includes('off') ? t.proofOff : ''}
+          </p>
+        </motion.div>
+        <ProofLab chain={chain} t={t} lang={lang} when={when} />
       </section>
 
       <footer className="story-footer">
