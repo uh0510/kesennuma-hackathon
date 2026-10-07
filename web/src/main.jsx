@@ -29,7 +29,7 @@ import { checkAis } from './lib/ais.js'
 import { compressImage } from './lib/photo.js'
 import { OFFSITE_M, currentPosition, positionError } from './lib/geo.js'
 import { BRAND } from './brand.js'
-import { LogoTile, qrLogo } from './logo.jsx'
+import { LogoTile, FishMark, qrLogo } from './logo.jsx'
 import { useLook } from './theme.js'
 import { ymd, mdhm, shortHash, buildItems, ancestors, rootOf, originsOf, useVerify, useVerifyAll, useVesselActivities } from './model.js'
 import { ConsumerNotice, ConsumerView } from './consumer.jsx'
@@ -687,10 +687,10 @@ function PrintSheet({ job, items }) {
           <div className="print-label" key={`${it.id}-${pack ?? 0}`}>
             <QRCodeSVG value={qrUrl(it.id, pack)} size={88} {...qrLogo(88)} />
             <div className="print-label-text">
-              <div className="pl-brand">{BRAND.ja} {BRAND.en} · 気仙沼</div>
+              <div className="pl-brand"><FishMark width={22} color="#0b2a3a" eye="#fff" /><b>{BRAND.ja}</b> {BRAND.en}<span>気仙沼</span></div>
               <div className="pl-name">{it.name}</div>
-              <div className="pl-weight">{it.qty > 1 && it.unitKg ? gram(it.unitKg) : `${it.kg} kg`}{pack ? `　${pack} / ${it.qty}` : ''}</div>
-              <div className="pl-origin">{root.species} · {root.info.shipName ?? ''}</div>
+              <div className="pl-no">{shortNo(it.id)}{pack ? <small> {pack}/{it.qty}</small> : null}</div>
+              <div className="pl-weight">{it.qty > 1 && it.unitKg ? gram(it.unitKg) : `${it.kg} kg`} · {root.species}{root.info.shipName ? ` · ${root.info.shipName}` : ''}</div>
               <div className="pl-id">{it.id}</div>
             </div>
           </div>
@@ -699,6 +699,12 @@ function PrintSheet({ job, items }) {
     </div>,
     document.body,
   )
+}
+
+// ラベルに大きく出す短い番号：KSN-PBF-261006-001-P01 → 1006-001-P01（水揚げの月日・連番・加工品の番号）
+const shortNo = (id) => {
+  const m = /^KSN-[A-Z]+-\d{2}(\d{4})-(.+)$/.exec(id)
+  return m ? `${m[1]}-${m[2]}` : id
 }
 
 // 印刷する対象を受け取り、用紙を描いてから印刷の画面を開く
@@ -712,6 +718,83 @@ function usePrintLabels() {
     return () => { clearTimeout(t); window.removeEventListener('afterprint', done) }
   }, [job])
   return [job, setJob]
+}
+
+// ==== 水産流通適正化法：太平洋クロマグロの大型魚（30kg以上・解体前） ====
+// 2026年4月から対象。取引のときに「名称・漁船名・産地での重さ・陸揚げ日」を伝え（QR などのタグでもよい）、
+// 販売日・販売先・販売時の重さを3年間記録する（水産庁のリーフレットによる）。届出（eMAFF）は事業者ごとの手続きで魚籍の外
+const tekiseikaTarget = (it) => it.unit === 'fish' && it.species === 'クロマグロ' && it.kg >= 30
+
+function tekiseikaRows(it) {
+  let kg = it.kg
+  const rows = []
+  for (const ev of it.events) {
+    const raw = it.rawEvents.find((r) => r.id === ev.id)
+    if (Number(ev.kg) > 0) kg = Number(ev.kg)
+    if ((ev.type === 'auction' || ev.type === 'ship') && ev.to) rows.push({ id: ev.id, date: ymd(raw.created_at), kind: ev.type === 'auction' ? 'せり（販売）' : '出荷（販売）', from: ev.who, to: ev.to.name, kg })
+    else if (ev.type === 'receive') rows.push({ id: ev.id, date: ymd(raw.created_at), kind: '受け取り（買受け）', from: ev.from?.name ?? '—', to: ev.who, kg })
+  }
+  return rows
+}
+
+function TekiseikaSheet({ it }) {
+  const rows = tekiseikaRows(it)
+  return (
+    <>
+      <InfoList rows={[
+        ['名称', '太平洋クロマグロ（天然）'],
+        ['採捕した漁船名', it.info.shipName ?? '—'],
+        ['産地における重量', `${it.kg} kg`],
+        ['陸揚げ日', it.info.landedAt ? ymd(it.info.landedAt) : '—'],
+        ['タグの番号（QR）', <span key="id" style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{it.id}</span>],
+      ]} />
+      <Text size="sm" fw={600} mt="md" mb={6}>取引の記録（{rows.length}件）</Text>
+      {rows.length > 0
+        ? (
+          <div className="inset-list glass teki-rows">
+            {rows.map((r) => (
+              <div className="inset-row" key={r.id}>
+                <Text size="sm" className="label">{r.date}</Text>
+                <Text size="sm" className="value">{r.kind}：{r.from} → {r.to}　{r.kg} kg</Text>
+              </div>
+            ))}
+          </div>
+        )
+        : <Text size="sm" c="dimmed">まだ取引の記録はありません</Text>}
+    </>
+  )
+}
+
+function TekiseikaCard({ it }) {
+  const [printing, setPrinting] = useState(false)
+  useEffect(() => {
+    if (!printing) return
+    const done = () => setPrinting(false)
+    window.addEventListener('afterprint', done)
+    const t = setTimeout(() => window.print(), 100)
+    return () => { clearTimeout(t); window.removeEventListener('afterprint', done) }
+  }, [printing])
+  return (
+    <Card>
+      <Group justify="space-between" mb="xs" wrap="nowrap">
+        <div>
+          <Text fw={700}>水産流通適正化法の伝達事項</Text>
+          <Text size="xs" c="dimmed">太平洋クロマグロ 30kg以上・解体前（2026年4月から対象）</Text>
+        </div>
+        <Button size="compact-sm" variant="light" leftSection={<IconPrinter size={14} />} onClick={() => setPrinting(true)}>印刷</Button>
+      </Group>
+      <TekiseikaSheet it={it} />
+      <Text size="xs" c="dimmed" mt="sm">ラベルの QR で伝達できます（タグ等による伝達）。取引記録は消せない形で残ります。届出（eMAFF）は各事業者で行ってください。</Text>
+      {printing && createPortal(
+        <div className="print-sheet print-doc" aria-hidden>
+          <h1>水産流通適正化法 伝達事項・取引記録</h1>
+          <p>太平洋クロマグロ（30kg以上・解体前）　出力日 {ymd(new Date().toISOString())}　{BRAND.ja} {BRAND.en}</p>
+          <TekiseikaSheet it={it} />
+        </div>,
+        document.body,
+      )}
+    </Card>
+  )
 }
 
 function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, me, myBiz, onPrint }) {
@@ -774,7 +857,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
         </div>
         <Box p={isMobile ? 'md' : 'lg'}>
           <Stages it={it} />
-          {it.parent && <Text size="sm" c="dimmed" mb="sm">親ID <Anchor ff="monospace" size="sm" onClick={() => setSel(it.parent)}>{it.parent}</Anchor></Text>}
+          {it.parent && <Text size="sm" c="dimmed" mb="sm">親ID <Anchor component="button" ff="monospace" size="sm" onClick={() => setSel(it.parent)}>{it.parent}</Anchor></Text>}
           <div className="custody-bar">
             <Text size="sm"><Text span c="dimmed">{it.children.length ? '加工前の持ち主 ' : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
             {kidsWhere.length > 0 && (
@@ -799,7 +882,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
             </SimpleGrid>
           )}
           {it.into ? (
-            <Text size="sm" className="custody-note">加工ロット <Anchor ff="monospace" size="sm" onClick={() => setSel(it.into)}>{it.into}</Anchor> に入れました。加工品はロットから発行します。</Text>
+            <Text size="sm" className="custody-note">加工ロット <Anchor component="button" ff="monospace" size="sm" onClick={() => setSel(it.into)}>{it.into}</Anchor> に入れました。加工品はロットから発行します。</Text>
           ) : isRecipient ? (
             <Button fullWidth size="lg" leftSection={<IconPackageImport size={20} />} onClick={() => open('receive')}>{cu.holderName} から受け取る</Button>
           ) : canAct && it.children.length > 0 ? (
@@ -848,6 +931,8 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
 
       {tab === 'info' && root.unit === 'mix' && <MixInputs items={items} lot={root} setSel={setSel} />}
 
+      {tab === 'info' && tekiseikaTarget(it) && <TekiseikaCard it={it} />}
+
       {tab === 'info' && chainPhotos.length > 0 && (
         <div>
           <Text className="section-label">写真（水揚げ時から引き継ぎ）</Text>
@@ -871,7 +956,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           {it.kind === 'prod' && (
             <div>
               <Text className="section-label">元の{unitWord(root)}から自動で引き継ぐ情報</Text>
-              <InfoList rows={[[`元の${unitWord(root)}のID`, <Anchor key="r" ff="monospace" size="sm" onClick={() => setSel(root.id)}>{root.id}</Anchor>], ...root.attrs.filter(([k]) => !k.startsWith('重量'))]} />
+              <InfoList rows={[[`元の${unitWord(root)}のID`, <Anchor key="r" component="button" ff="monospace" size="sm" onClick={() => setSel(root.id)}>{root.id}</Anchor>], ...root.attrs.filter(([k]) => !k.startsWith('重量'))]} />
             </div>
           )}
         </SimpleGrid>
@@ -1866,9 +1951,11 @@ function App() {
   const [me, setMe] = useState(null)
   const [authChecked, setAuthChecked] = useState(false) // ログイン状態を確かめ終えたか
   const [loginOpen, setLoginOpen] = useState(false)
-  const [sel, setSel] = useState(qid)
+  // 管理画面で開いている記録は URL（?item=）にも残す。デモ中に読み直しても同じ記録が開き、特定の魚へのリンクも作れる
+  const urlItem = new URLSearchParams(location.search).get('item')
+  const [sel, setSel] = useState(qid ?? urlItem)
   const [view, setView] = useState(qid ? 'consumer' : 'manage')
-  const [pane, setPane] = useState('list') // スマホの管理画面：一覧 or 詳細
+  const [pane, setPane] = useState(urlItem && !qid ? 'detail' : 'list') // スマホの管理画面：一覧 or 詳細
   const [modal, setModal] = useState(null) // 'register' | 'add' | 'process' | 'scan'
   // QRから来た消費者・ログインしていない人には、管理用の切り替えを見せない
   const showNav = !qid && !!me
@@ -1904,6 +1991,12 @@ function App() {
     return () => subscription.unsubscribe()
   }, [])
   const items = useMemo(() => (db ? buildItems(db) : null), [db])
+  useEffect(() => {
+    if (qid || !me || view !== 'manage') return
+    const u = new URL(location.href)
+    if (sel) u.searchParams.set('item', sel); else u.searchParams.delete('item')
+    history.replaceState(null, '', u)
+  }, [sel, qid, me, view])
   // ログアウトしたら管理画面に戻す（消費者画面の切り替えもログインした人だけ）
   useEffect(() => { if (authChecked && !me && !qid) setView('manage') }, [authChecked, me])
 

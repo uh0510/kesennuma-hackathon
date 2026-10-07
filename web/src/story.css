@@ -366,3 +366,39 @@ body:has(.dark-shell) { background: var(--bg); }
   background: radial-gradient(ellipse at 30% 20%, rgba(var(--accent-strong-rgb), 0.38), transparent 55%), radial-gradient(ellipse at 80% 70%, var(--glow-2), transparent 55%);
 }
 :root[data-look="sea"] .lang-toggle button[data-active] { background: var(--fg); color: var(--bg); }
+
+/* ==== 根拠の印（表紙の検印の下） ==== */
+.evidence { margin-top: 12px; max-width: 520px; }
+.ev-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ev-chip {
+  --c: #30d158; display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px 6px 7px; border-radius: 99px; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--fg); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line);
+}
+.ev-chip:hover { background: rgba(255, 255, 255, 0.09); }
+.ev-chip[aria-expanded="true"] { border-color: var(--c); }
+.ev-chip[data-level="warn"] { --c: #ff9f0a; }
+.ev-chip[data-level="ng"] { --c: #ff453a; }
+.ev-chip[data-level="na"], .ev-chip[data-level="wait"] { --c: #8e8e93; }
+.ev-chip[data-kind="biz"] { --c: var(--accent); }
+.ev-chip[data-kind="self"] { --c: var(--fg-2); }
+/* 印の形：第三者＝塗りの丸、事業者の記録＝四角、自己申告＝点線の丸と ✎ */
+.ev-mark { width: 18px; height: 18px; flex-shrink: 0; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; border-radius: 50%; background: var(--c); }
+.ev-chip[data-kind="biz"] .ev-mark { border-radius: 4px; width: 14px; height: 14px; margin: 0 2px; }
+.ev-chip[data-kind="self"] .ev-mark { background: none; border: 1.5px dashed var(--c); color: var(--c); font-size: 10px; }
+.ev-detail { margin-top: 10px; padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
+.ev-kind { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--fg-2); margin-bottom: 4px; }
+.ev-line { font-size: 13px; color: var(--fg); line-height: 1.6; }
+.ev-detail .hb-tx { margin-top: 6px; }
+.ev-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-size: 11px; color: var(--fg-3); }
+.ev-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.ev-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #30d158; }
+.ev-legend i[data-kind="biz"] { border-radius: 2px; background: var(--accent); }
+.ev-legend i[data-kind="self"] { background: none; border: 1.5px dashed var(--fg-2); }
+@media (max-width: 47.99em) {
+  .ev-chip { font-size: 12px; padding: 5px 10px 5px 6px; }
+}
+
+/* キーボードで操作したときの枠（言語・見た目の切り替え、再生、記録の証明、根拠の印） */
+.story button:focus-visible, .story a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.story { color-scheme: dark; }
+.notice-fish { opacity: 0.85; margin-bottom: 4px; filter: drop-shadow(0 0 24px rgba(var(--accent-rgb), 0.35)); }

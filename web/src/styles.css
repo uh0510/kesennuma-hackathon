@@ -29,6 +29,8 @@
 
 
 html, body { background: var(--apple-bg); color: var(--apple-text); -webkit-font-smoothing: antialiased; }
+/* 押したときの青い影を出さない・ダブルタップで拡大しない（現場で手袋のまま押す） */
+html { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 
 /* ガラスを映えさせる背景（iOS Safari は background-attachment: fixed が効かないので疑似要素で固定） */
 body::before {
@@ -220,16 +222,26 @@ body::before {
   body > *:not(.print-sheet) { display: none !important; }
   .print-sheet { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
   .print-label {
-    display: flex; gap: 3mm; align-items: center; height: 36mm; padding: 2.5mm; box-sizing: border-box;
+    display: flex; gap: 2.5mm; align-items: center; height: 36mm; padding: 2.5mm; box-sizing: border-box;
     border: 0.3mm dashed #999; break-inside: avoid; color: #000; font-family: 'BIZ UDPGothic', 'Hiragino Sans', sans-serif;
   }
-  .print-label svg { width: 24mm !important; height: 24mm !important; flex-shrink: 0; }
-  .print-label-text { min-width: 0; line-height: 1.25; }
-  .pl-brand { font-size: 6.5pt; color: #444; }
-  .pl-name { font-size: 9pt; font-weight: 700; }
-  .pl-weight { font-size: 8.5pt; }
-  .pl-origin { font-size: 7pt; color: #333; }
-  .pl-id { font-size: 6pt; font-family: monospace; word-break: break-all; color: #333; }
+  .print-label > svg { width: 24mm !important; height: 24mm !important; flex-shrink: 0; }
+  .print-label-text { min-width: 0; flex: 1; line-height: 1.25; }
+  .pl-brand { display: flex; align-items: center; gap: 1mm; font-size: 5.5pt; color: #0b2a3a; letter-spacing: 0.03em; white-space: nowrap; padding-bottom: 0.8mm; border-bottom: 0.3mm solid #0b2a3a; margin-bottom: 1mm; }
+  .pl-brand b { font-size: 7.5pt; letter-spacing: 0.06em; }
+  .pl-brand span { margin-left: auto; padding-left: 1mm; }
+  .pl-brand svg { width: 6mm !important; height: auto !important; }
+  .pl-name { font-size: 8.5pt; font-weight: 700; }
+  /* 人が読む短い番号は大きく、長い ID は小さく */
+  .pl-no { white-space: nowrap; font-size: 11pt; font-weight: 700; font-family: 'Inter', sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; line-height: 1.15; margin-top: 0.5mm; }
+  .pl-no small { font-size: 7pt; font-weight: 600; }
+  .pl-weight { font-size: 7pt; color: #222; }
+  .pl-id { font-size: 5.5pt; font-family: monospace; word-break: break-all; color: #666; margin-top: 0.5mm; }
+  /* 適正化法の1枚 */
+  .print-sheet.print-doc { display: block; font-family: 'BIZ UDPGothic', 'Hiragino Sans', sans-serif; color: #000; }
+  .print-doc h1 { font-size: 14pt; margin: 0 0 2mm; }
+  .print-doc p { font-size: 9pt; margin: 0 0 4mm; }
+  .print-doc .glass { background: none !important; backdrop-filter: none !important; box-shadow: none !important; border: 0.3mm solid #999; }
 }
 
 /* ==== ログイン画面 ==== */

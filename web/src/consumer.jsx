@@ -2,18 +2,19 @@
 // 黒い背景に大きな文字、旅の地図、スクロールに合わせて現れる道のり、という Apple の製品ページ風の構成
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Select, Anchor } from '@mantine/core'
-import { motion, useInView, useScroll, useSpring, animate, AnimatePresence, useReducedMotion } from 'motion/react'
+import { motion, useInView, useScroll, useSpring, animate, AnimatePresence, useReducedMotion, MotionConfig } from 'motion/react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './story.css'
 import { IconLink } from '@tabler/icons-react'
 import { ymd, mdhm, shortHash, addDays, ancestors, useVerifyAll, useVesselActivity, useVesselActivities } from './model.js'
-import { explorerAddress } from './api.js'
+import { explorerAddress, explorerTx } from './api.js'
 import { checkAis } from './lib/ais.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
 import { BRAND } from './brand.js'
 import { ProofLab } from './proof.jsx'
 import { useLook, cssVar } from './theme.js'
+import { FishMark } from './logo.jsx'
 
 // 地図に置く地点。海域は正確な漁獲地点ではなく、海域の代表地点（画面にもそう書く）
 const AREA_POINTS = {
@@ -67,8 +68,11 @@ function CountUp({ value, decimals = 0, suffix = '' }) {
   const ref = useRef(null)
   const inView = useInView(ref, { once: true })
   const [shown, setShown] = useState(0)
+  const reduce = useReducedMotion()
   useEffect(() => {
     if (!inView) return
+    // 端末が「動きを減らす」設定なら、数え上げずに最後の値を出す
+    if (reduce) { setShown(value); return }
     const c = animate(0, value, { duration: 1.4, ease: [0.16, 1, 0.3, 1], onUpdate: setShown })
     return () => c.stop()
   }, [inView, value])
@@ -452,11 +456,81 @@ function MapFallback({ stops, t }) {
   )
 }
 
+// 根拠の印：検印の下に、根拠の種類ごとに形を変えて並べる。押すと根拠が開く
+//   third＝第三者が確かめられる（ブロックチェーン・船の位置データ）／ biz＝事業者の記録（計量）／ self＝自己申告（漁船の申告）
+function Evidence({ verify, aisRes, ais, root, lot, allEvents, t, lang, when }) {
+  const [open, setOpen] = useState(null)
+  const tr = (x) => term(lang, x)
+  const list = []
+  // ブロックチェーン
+  const lastTx = [...allEvents].reverse().find((e) => e.tx)?.tx
+  list.push({
+    key: 'chain', kind: 'third',
+    level: verify === null ? 'wait' : verify.onchain && verify.ok ? 'ok' : !verify.ok ? 'ng' : 'na',
+    label: verify === null ? t.evChainWait : verify.onchain && verify.ok ? t.evChain : !verify.ok ? t.evChainNg : t.evChainNone,
+    lines: [verify?.ok ? t.evChainLine(verify.count) : verify ? t.sealNgSub : ''].filter(Boolean),
+    link: lastTx ? explorerTx(lastTx) : null,
+  })
+  // 船の位置データ（加工ロットは魚ごとに下の節で見せる）
+  if (!lot && aisRes) {
+    list.push({
+      key: 'ais', kind: 'third', level: { ok: 'ok', partial: 'warn', ng: 'ng', none: 'na' }[aisRes.area] ?? 'na',
+      label: ({ ok: t.evAisOk, partial: t.evAisPartial, ng: t.evAisNg, none: t.evAisNone }[aisRes.area] ?? t.evAisNone) + (ais?.sample ? t.evSample : ''),
+      lines: [
+        t.aisDeclared(tr(root.info.catchArea) ?? '—', root.info.catchFrom ? `${root.info.catchFrom}〜${root.info.catchTo}` : null),
+        aisRes.total ? t.aisSeen(aisRes.top.slice(0, 3).map(([f, n]) => `FAO ${f}：${n}`).join(' / '), aisRes.total) : null,
+        aisRes.port === 'ok' ? `${t.aisPort} ${t.aisPortOk(tr(root.info.port), ymd(aisRes.visit.start))}` : aisRes.port === 'ng' ? t.aisPortNg(tr(root.info.port)) : null,
+        ais?.sample ? t.aisSample : t.evAisSource,
+      ].filter(Boolean),
+    })
+  }
+  // 水揚げの計量（市場の記録）
+  const landing = !lot && root.events.find((e) => e.type === 'landing')
+  if (landing) {
+    list.push({ key: 'weigh', kind: 'biz', level: 'ok', label: t.evWeigh, lines: [`${root.kg} kg · ${tr(landing.who)}`, when(root.rawEvents.find((e) => e.id === landing.id)?.created_at)] })
+  }
+  // 漁船の申告
+  const decl = !lot && root.info.declaration
+  if (decl) {
+    list.push({ key: 'decl', kind: 'self', level: 'ok', label: t.evDecl, lines: [t.declaredBy(tr(root.info.shipName) ?? '', when(decl.at)), t.aisDeclared(tr(root.info.catchArea) ?? '—', root.info.catchFrom ? `${root.info.catchFrom}〜${root.info.catchTo}` : null)] })
+  }
+  const cur = list.find((x) => x.key === open)
+  const mark = (x) => (x.kind === 'self' ? '✎' : x.kind === 'biz' ? '' : x.level === 'ok' ? '✓' : x.level === 'wait' ? '' : '!')
+  return (
+    <div className="evidence">
+      <div className="ev-chips">
+        {list.map((x) => (
+          <button key={x.key} type="button" className="ev-chip" data-kind={x.kind} data-level={x.level} aria-expanded={open === x.key}
+            onClick={() => setOpen((v) => (v === x.key ? null : x.key))}>
+            <span className="ev-mark" aria-hidden>{mark(x)}</span>{x.label}
+          </button>
+        ))}
+      </div>
+      <AnimatePresence initial={false}>
+        {cur && (
+          <motion.div key={cur.key} className="ev-detail" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
+            <div className="ev-kind" data-kind={cur.kind}>{t.evKinds[cur.kind]}</div>
+            {cur.lines.map((l) => <div key={l} className="ev-line">{l}</div>)}
+            {cur.link && <a className="hb-tx" href={cur.link} target="_blank" rel="noreferrer"><IconLink size={12} /> {t.viewOnChain}</a>}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <div className="ev-legend">
+        <span><i data-kind="third" />{t.evKinds.third}</span><span><i data-kind="biz" />{t.evKinds.biz}</span><span><i data-kind="self" />{t.evKinds.self}</span>
+      </div>
+    </div>
+  )
+}
+
+// 船の位置の記録（AIS）との照らし合わせの結果（表紙の印と、下の節の両方で使う）
+const aisResultOf = (root, ais) => (ais && !ais.error && ais.linked
+  ? checkAis({ catchArea: root.info.catchArea, landingPort: root.info.port, landedAt: root.info.landedAt ?? root.info.createdAt, ais }) : null)
+
 // 申告と、船の位置の記録（AIS）の照らし合わせ
 function AisCheck({ root, ais, t, lang }) {
   // 船に AIS がひも付いていない・読めなかったときは何も出さない（消費者には関係のない失敗なので）
   if (ais === undefined || ais?.linked === false || ais?.error) return null
-  const res = ais && !ais.error ? checkAis({ catchArea: root.info.catchArea, landingPort: root.info.port, landedAt: root.info.landedAt ?? root.info.createdAt, ais }) : null
+  const res = aisResultOf(root, ais)
   const tr = (x) => term(lang, x)
   const mark = (level) => ({ ok: ['ok', '✓'], partial: ['warn', '!'], ng: ['ng', '!'], none: ['warn', '?'] }[level] ?? ['warn', '?'])
   const Row = ({ level, title, main, sub }) => (
@@ -469,7 +543,8 @@ function AisCheck({ root, ais, t, lang }) {
     <section className="story-section">
       <motion.div {...reveal}>
         <div className="eyebrow-dark">AIS CHECK</div>
-        <h2 className="story-h2">{t.aisTitle}</h2>
+        {/* 見出しは結論の言葉で */}
+        <h2 className="story-h2">{res ? ({ ok: t.aisTitleOk, partial: t.aisTitlePartial, ng: t.aisTitleNg }[res.area] ?? t.aisTitle) : t.aisTitle}</h2>
         <p className="story-lead">{t.aisLead}</p>
       </motion.div>
       <motion.div className="ais-card glass-dark" {...reveal} transition={{ ...reveal.transition, delay: 0.15 }}>
@@ -698,7 +773,8 @@ export function ConsumerView({ items, sel, setSel, demo }) {
   if (!cur) return <div className="story"><div className="story-empty">{STR[lang].empty}</div></div>
   // パックのラベルの QR には連番（?pack=）が付く
   const pack = Number(new URLSearchParams(location.search).get('pack')) || null
-  return <Story key={cur} items={items} cur={cur} all={all} setSel={setSel} demo={demo} lang={lang} setLang={setLang} pack={pack} />
+  // 端末が「動きを減らす」設定なら、フェードや移動の動きを止める
+  return <MotionConfig reducedMotion="user"><Story key={cur} items={items} cur={cur} all={all} setSel={setSel} demo={demo} lang={lang} setLang={setLang} pack={pack} /></MotionConfig>
 }
 
 // QR を読んだが見せられないとき（販売前・ID がない・記録が消された疑い）
@@ -711,6 +787,7 @@ export function ConsumerNotice({ status, erased }) {
     <div className="story">
       <div className="story-notice">
         <div className="hero-toggles"><LookToggle lang={lang} /><LangToggle lang={lang} setLang={setLang} /></div>
+        {status !== 'erased' && <div className="notice-fish"><FishMark width={120} color="var(--accent)" eye="var(--bg)" /></div>}
         <div className="eyebrow-dark">{BRAND.ja} {BRAND.en}</div>
         {status === 'erased' && <div className="notice-alert" aria-hidden>!</div>}
         <h1 className="story-h2">{title}</h1>
@@ -858,6 +935,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
           {!lot && root.unit === 'lot' && <><br />{t.fromLot(root.info.landedAt ? new Date(root.info.landedAt).toLocaleDateString(lang === 'en' ? 'en-US' : 'ja-JP', { timeZone: 'Asia/Tokyo', month: lang === 'en' ? 'short' : 'numeric', day: 'numeric' }) : '', tr(root.info.shipName), tr(root.species), tr(root.grade), root.count, root.kg)}</>}
         </motion.p>
         <Seal verify={verify} t={t} />
+        <Evidence verify={verify} aisRes={lot ? null : aisResultOf(root, ais)} ais={ais} root={root} lot={lot} allEvents={allEvents} t={t} lang={lang} when={when} />
         <div className="hero-stats">
           <div><b><CountUp value={distance} suffix=" km" /></b><span className="stat-label">{t.statKm}</span></div>
           <div><b><CountUp value={days} suffix={t.daysUnit(days)} /></b><span className="stat-label">{t.statDays}</span></div>
