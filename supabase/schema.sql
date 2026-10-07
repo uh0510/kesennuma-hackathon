@@ -109,7 +109,8 @@ create table items (
   created_by  uuid not null references businesses(id),
   created_at  timestamptz not null default now(),
   constraint items_kind_parent_check
-    check ((kind in ('individual','catch_lot') and parent_id is null and inputs is null)
+    check ((kind = 'individual' and parent_id is null and inputs is null)
+        or (kind = 'catch_lot' and inputs is null)
         or (kind = 'process_lot' and parent_id is null and cardinality(inputs) >= 1)
         or (kind = 'product' and parent_id is not null and inputs is null))
 );
@@ -119,7 +120,7 @@ create index on items(parent_id);
 create table events (
   id          bigserial primary key,
   item_id     text not null references items(id),
-  type        text not null check (type in ('catch','landing','auction','storage','process','born','ship','fix','activate','receive','sell')),
+  type        text not null check (type in ('catch','landing','auction','storage','process','born','ship','fix','activate','receive','sell','split')),
   actor       uuid not null references businesses(id),
   payload     jsonb not null default '{}'::jsonb,   -- 海域・買受人・加工内容など
   prev_hash   text,                                 -- 同じ item の直前の記録の hash

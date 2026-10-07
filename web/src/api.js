@@ -146,15 +146,15 @@ export async function nextLandingId(prefix, knownIds) {
 // lot＝false：1尾ずつ（マグロ系）。lot＝true：船 × 水揚げ日 × 魚種 × 銘柄のまとまり（count は尾数のおおよそ）
 // catchFrom / catchTo は漁獲期間（YYYY-MM-DD）。period は表示用の文字（前からの形）
 // declarationId：漁船の申告から登録するとき（魚種・船・海域・漁獲期間はサーバーが申告の値にする）
-export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, declarationId }) {
+export function registerLanding({ itemId, species, lot, grade, count, weightKg, shipId, catchArea, landingPort, catchFrom, catchTo, landedAt, photo, declarationId, lengthCm }) {
   const period = `${catchFrom}〜${catchTo}`
   const sr = declarationId ? { declarationId } : {}
   return recordEvent({
     itemId, type: 'landing', ...photoBody(photo),
     newItem: { kind: lot ? 'catch_lot' : 'individual', species, name: species, weight_kg: weightKg, quantity: lot ? count : 1, ship_id: shipId, catch_area: catchArea, landing_port: landingPort, landed_at: landedAt },
     payload: lot
-      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg`, grade, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg, ...sr }
-      : { detail: `個体タグ取付・重量 ${weightKg}kg`, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg, ...sr },
+      ? { detail: `水揚げロットを登録・${grade}・約${count}尾・${weightKg}kg${lengthCm ? `・体長 目安 ${lengthCm}cm` : ''}`, grade, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg, ...(lengthCm ? { length_cm: lengthCm } : {}), ...sr }
+      : { detail: `個体タグ取付・重量 ${weightKg}kg${lengthCm ? `・体長 ${lengthCm}cm` : ''}`, period, catch_from: catchFrom, catch_to: catchTo, weight_kg: weightKg, ...(lengthCm ? { length_cm: lengthCm } : {}), ...sr },
   })
 }
 
@@ -180,6 +180,12 @@ export async function processItem({ parent, childIds, productId, name, lots, pho
 // 入れた魚と重さの一覧はサーバーが記録に入れ、指紋に含める
 export function makeProcessLot({ itemId, name, inputs, photo }) {
   return recordEvent({ mix: { itemId, name, inputs }, ...photoBody(photo) })
+}
+
+// 入札の単位に分ける（市場）：自分が持っている水揚げロットを、箱・山ごとの子の水揚げロットにする
+// lots = [{ itemId（親ID-01 の形）, weightKg, count, grade?, lengthCm? }]。重さの合計は元の重さまで（サーバーで確かめる）
+export function splitLot({ parentId, lots, photo }) {
+  return recordEvent({ split: { parentId, lots }, ...photoBody(photo) })
 }
 
 // 漁獲の申告（漁船）：水揚げの前に、魚種・海域・漁獲期間・見込みの量を自分の鍵で申告する。場所も記録する

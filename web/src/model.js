@@ -16,7 +16,8 @@ export function buildItems({ items, events, ships, products, businesses }) {
   const out = {}
   for (const r of items) {
     const evs = events.filter((e) => e.item_id === r.id)
-    const landing = evs.find((e) => e.type === 'landing')
+    // 水揚げの記録。入札の単位（水揚げロットを分けたもの）は、分けたときの記録（split）を同じように使う
+    const landing = evs.find((e) => e.type === 'landing') ?? evs.find((e) => e.type === 'split' && e.payload?.from)
     // 発行したときの写し（あれば、マスタの今の値ではなくこちらを表示する）
     const snap = evs.find((e) => e.payload?.item)?.payload.item ?? null
     let attrs
@@ -25,10 +26,11 @@ export function buildItems({ items, events, ships, products, businesses }) {
     const grade = landing?.payload?.grade ?? null
     if (r.kind === 'individual' || lot) {
       const s = snap?.ship ?? ship[r.ship_id] ?? {}
-      attrs = [['魚種', r.species], ...(lot ? [['銘柄（サイズ）', grade ?? '—'], ['尾数', `約 ${r.quantity} 尾`]] : []),
+      attrs = [['魚種', r.species], ...(lot && r.parent_id ? [['元の水揚げロット', r.parent_id]] : []), ...(lot ? [['銘柄（サイズ）', grade ?? '—'], ['尾数', `約 ${r.quantity} 尾`]] : []),
         ['漁船', s.name ?? '—'], ['漁船登録番号', s.reg_no ?? '—'], ['漁業許可番号', s.permit_no ?? '—'], ['漁法', s.gear ?? '—'],
         ['漁獲海域', r.catch_area ?? '—'], ['漁獲期間', landing?.payload?.period || '—'], ['水揚げ港', r.landing_port ?? '—'],
-        ['水揚げ日', r.landed_at ? ymd(r.landed_at) : '—'], [lot ? '重量（水揚げ時の合計）' : '重量（水揚げ時）', `${r.weight_kg} kg`]]
+        ['水揚げ日', r.landed_at ? ymd(r.landed_at) : '—'], [lot ? (r.parent_id ? '重量（分けたとき）' : '重量（水揚げ時の合計）') : '重量（水揚げ時）', `${r.weight_kg} kg`],
+        ...(landing?.payload?.length_cm ? [[lot ? '体長（1尾の目安）' : '体長（水揚げ時）', `${landing.payload.length_cm} cm`]] : [])]
     } else if (mix) {
       attrs = [['魚種', r.species], ['入れた魚', `${r.inputs?.length ?? 0}件`], ['加工者', biz[r.created_by]?.name ?? '—'], ['作成日', ymd(r.created_at)], ['重量（入れた魚の合計）', `${r.weight_kg} kg`]]
     } else {
@@ -53,6 +55,7 @@ export function buildItems({ items, events, ships, products, businesses }) {
         storage: (snap?.product ?? prod[r.product_id])?.storage ?? null, shelfDays: (snap?.product ?? prod[r.product_id])?.shelf_days ?? null,
         // 漁船の申告（あれば）と、水揚げの重さがはかりの署名つきか
         declaration: landing?.payload?.declaration ?? null, landingScale: landing?.payload?.scale ?? null,
+        lengthCm: Number(landing?.payload?.length_cm) > 0 ? Number(landing.payload.length_cm) : null,
         inputs: r.inputs ?? [], inputKg: Object.fromEntries((evs.find((e) => e.type === 'born')?.payload?.inputs ?? []).map((x) => [x.id, x.kg])),
       },
       // 加工ロットに入れた魚：入れた先の加工ロットのID（入れたあとは、ここに記録を足さない）
@@ -66,6 +69,13 @@ export function buildItems({ items, events, ships, products, businesses }) {
     }
   }
   for (const it of Object.values(out)) if (it.parent && out[it.parent]) out[it.parent].children.push(it.id)
+  // 入札の単位（水揚げロットを分けたもの）：漁獲期間・漁船の申告は元の水揚げロットの記録にあるので引き継ぐ
+  for (const it of Object.values(out)) {
+    const p = it.unit === 'lot' && it.parent ? out[it.parent] : null
+    if (!p) continue
+    for (const k of ['period', 'catchFrom', 'catchTo', 'declaration']) it.info[k] ??= p.info[k]
+    it.attrs = it.attrs.map(([k, v]) => (k === '漁獲期間' && v === '—' ? [k, p.info.period ?? '—'] : [k, v]))
+  }
   // まとめて発行した加工品は同じ時刻で登録されるので、ID の順に並べる
   for (const it of Object.values(out)) it.children.sort()
   return out
@@ -100,7 +110,7 @@ export function custodyOf(evs, biz, itemKg) {
   for (const e of evs) {
     const kg = Number(e.payload?.weight_kg)
     if (Number.isFinite(kg) && kg > 0) lastKg = kg
-    if (e.type === 'landing' || e.type === 'born') { holder = e.actor; pending = null }
+    if (e.type === 'landing' || e.type === 'born' || (e.type === 'split' && e.payload?.from)) { holder = e.actor; pending = null }
     else if ((e.type === 'auction' || e.type === 'ship') && e.payload?.to?.id) pending = e.payload.to.id
     else if (e.type === 'receive') { holder = e.actor; pending = null }
   }

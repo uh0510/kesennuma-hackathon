@@ -15,13 +15,13 @@ import {
   IconFish, IconSearch, IconPlus, IconCut, IconQrcode, IconShieldCheck, IconSailboat, IconAnchor, IconGavel,
   IconPackage, IconTruck, IconSnowflake, IconPencil, IconCornerDownRight, IconUserSearch, IconDatabase,
   IconAlertTriangle, IconTag, IconLogin, IconLogout, IconLink, IconChevronRight, IconChevronLeft, IconUserCircle,
-  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin, IconPackageImport, IconPackageExport, IconBuildingStore, IconArrowRight, IconPrinter, IconStack2, IconScale,
+  IconList, IconCircleCheckFilled, IconLock, IconCamera, IconMapPin, IconPackageImport, IconPackageExport, IconBuildingStore, IconArrowRight, IconPrinter, IconStack2, IconScale, IconLayoutGrid, IconTrash,
 } from '@tabler/icons-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import {
   supabase, chainEnabled, signIn, signOut, fetchMe, fetchAll, fetchTrace,
-  registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId, makeProcessLot,
+  registerLanding, appendEvent, processItem, explorerTx, handover, receiveItem, startSale, handoverMany, receiveMany, sellMany, nextLandingId, makeProcessLot, splitLot,
   declareCatch, fetchVesselFollowup,
 } from './api.js'
 import { checkWeight, childIds, weightDrift } from './lib/rules.js'
@@ -86,7 +86,9 @@ const SPECIES = [
 ]
 const GRADES = ['大', '中', '小', '区分なし']
 // 「個体」「水揚げロット」「加工品」の呼び名
-const unitWord = (it) => (it.kind === 'prod' ? '加工品' : it.unit === 'lot' ? '水揚げロット' : it.unit === 'mix' ? '加工ロット' : '個体')
+const unitWord = (it) => (it.kind === 'prod' ? '加工品' : it.unit === 'lot' ? (it.parent ? '入札の単位' : '水揚げロット') : it.unit === 'mix' ? '加工ロット' : '個体')
+// 子の呼び名：水揚げロットを分けたもの（入札の単位）か、加工品か
+const kidWord = (it, items) => (it.children.some((id) => items[id]?.unit === 'lot') ? { name: '入札の単位', unit: '件' } : { name: '加工品', unit: 'ロット' })
 // 重さの入力の刻み：水揚げロット（数百kg〜）・1尾（数十kg〜）・加工品（kg 未満〜）
 const kgInput = (it) => (it.kind === 'prod' ? { steps: [0.1, 1], decimals: 2 } : it.unit === 'lot' || it.unit === 'mix' ? { steps: [10, 100], decimals: 1 } : { steps: [1, 10], decimals: 1 })
 const AREAS = ['北西太平洋（FAO 61）', '三陸沖', '中西部太平洋（FAO 71）', '南西太平洋（FAO 81）', 'インド洋東部（FAO 57）', '中東部大西洋（FAO 34）']
@@ -143,6 +145,8 @@ function VerifyBadge({ item, variant = 'light' }) {
 // ロットの数量の表示（「400g × 45パック」）。個体や1個の加工品は空
 const gram = (kg) => (kg >= 1 ? `${kg}kg` : `${Math.round(kg * 1000)}g`)
 const lotLabel = (it) => (it.qty > 1 && it.unitKg ? `${gram(it.unitKg)} × ${it.qty}パック` : '')
+// ラベルの枚数：加工品はパックの数、それ以外（1尾・水揚げロット・入札の単位の箱）は1枚
+const labelCount = (it) => (it.kind === 'prod' ? it.qty : 1)
 
 // 魚種ごとの色（一覧のアイコンや詳細の帯に使う）
 const SPECIES_COLORS = {
@@ -200,7 +204,7 @@ const STAGES = {
   mix: [['born', 'ロット作成', IconStack2], ['process', '加工', IconCut]],
 }
 function Stages({ it }) {
-  const done = new Set(it.events.map((e) => e.type))
+  const done = new Set(it.events.map((e) => (e.type === 'split' ? 'landing' : e.type)))
   return (
     <div className="stages">
       {STAGES[it.unit === 'mix' ? 'mix' : it.kind].map(([k, label, Icon]) => (
@@ -449,7 +453,8 @@ function YieldPanel({ items, products, myId }) {
   const prodOf = Object.fromEntries(products.map((p) => [p.id, p]))
   const rows = Object.values(items)
     .map((p) => {
-      const kids = p.children.map((id) => items[id]).filter((k) => k.row.created_by === myId)
+      // 入札の単位（水揚げロットを分けたもの）は加工ではないので数えない
+      const kids = p.children.map((id) => items[id]).filter((k) => k.row.created_by === myId && k.kind === 'prod')
       if (!kids.length) return null
       const inKg = p.custody.lastKg ?? p.kg
       const outKg = kids.reduce((n, k) => n + k.kg, 0)
@@ -621,10 +626,10 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
         <div className="inbox">
           <Text size="xs" fw={700} c="#8a5300" mb={6}><IconPackageImport size={13} style={{ verticalAlign: -2 }} /> あなた宛ての受け取り待ち</Text>
           {inbox.map((b) => (
-            <UnstyledButton key={b.root.id} className="inbox-row" onClick={() => onPick(b.root.id)}>
+            <UnstyledButton key={b.key} className="inbox-row" onClick={() => onPick(b.root.id)}>
               <ItemAvatar it={b.root} size={28} />
               <div style={{ minWidth: 0, flex: 1 }}>
-                <Text size="sm" fw={600} truncate>{b.root.name}{b.count > 1 || b.lots ? ` の加工品 ${b.count}ロット` : ''}</Text>
+                <Text size="sm" fw={600} truncate>{b.root.name}{b.split ? ` の入札の単位 ${b.count}件` : b.count > 1 || b.lots ? ` の加工品 ${b.count}ロット` : ''}</Text>
                 <Text size="xs" c="dimmed" truncate>{b.from} から · {b.kg.toFixed(1)} kg</Text>
               </div>
               <IconChevronRight size={16} color="var(--apple-text-3)" />
@@ -643,7 +648,9 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
               <Text size="xs" c="dimmed" truncate>{r.kg} kg · <span style={{ fontFamily: 'var(--mantine-font-family-monospace)' }}>{r.id}</span></Text>
             </div>
             {r.into && <Badge size="sm" color="gray" style={{ flexShrink: 0 }}>ロットへ</Badge>}
-            {r.children.length > 0 && <Badge size="sm" color="orange" style={{ flexShrink: 0 }}>加工 {r.children.length}</Badge>}
+            {r.children.length > 0 && (r.children.some((id) => items[id]?.unit === 'lot')
+              ? <Badge size="sm" color="blue" style={{ flexShrink: 0 }}>分け {r.children.length}</Badge>
+              : <Badge size="sm" color="orange" style={{ flexShrink: 0 }}>加工 {r.children.length}</Badge>)}
             <IconChevronRight size={18} color="var(--apple-text-3)" />
           </UnstyledButton>
         ))}
@@ -656,7 +663,7 @@ function ItemList({ items, currentRoot, onPick, onRegister, onScan, isMobile, in
 
 // ラベルのQR。販売開始で有効になり、消費者が読めるようになる（それまでは薄く表示）
 // 事業者はログインしていれば、有効になる前でも読める
-function QrBlock({ it, onPrint, size = 112, onBand = false }) {
+function QrBlock({ it, onPrint, size = 112, onBand = false, kid = '加工品' }) {
   return (
     <Stack align="center" gap={8}>
       <Paper p={8} radius="md" shadow={onBand ? 'md' : undefined} style={{ background: 'white' }}>
@@ -665,10 +672,10 @@ function QrBlock({ it, onPrint, size = 112, onBand = false }) {
       {/* QR は販売開始を記録すると自動で公開になる（ボタンはない）。加工した元の魚は、加工品のラベルの QR で公開する */}
       {it.qr === 'active'
         ? <Badge variant={onBand ? 'white' : 'light'} color="green" tt="none" leftSection={<IconCircleCheckFilled size={12} />}>消費者に公開中</Badge>
-        : <Badge variant={onBand ? 'white' : 'light'} color="gray" tt="none">{it.children.length > 0 ? '加工品のラベルで公開' : '販売開始で自動公開'}</Badge>}
+        : <Badge variant={onBand ? 'white' : 'light'} color="gray" tt="none">{it.children.length > 0 ? `${kid}のラベルで公開` : '販売開始で自動公開'}</Badge>}
       {onPrint && (
         <Button size="compact-xs" variant={onBand ? 'white' : 'subtle'} leftSection={<IconPrinter size={13} />} onClick={onPrint}>
-          {it.qty > 1 ? `ラベルを印刷（${it.qty}枚）` : 'ラベルを印刷'}
+          {labelCount(it) > 1 ? `ラベルを印刷（${labelCount(it)}枚）` : 'ラベルを印刷'}
         </Button>
       )}
     </Stack>
@@ -680,7 +687,7 @@ function QrBlock({ it, onPrint, size = 112, onBand = false }) {
 // ブラウザからはプリンターがつながっているか分からないので、印刷の画面を開くだけ（つながっていなければ PDF に保存できる）
 function PrintSheet({ job, items }) {
   if (!job) return null
-  const labels = job.flatMap((it) => (it.qty > 1 ? Array.from({ length: it.qty }, (_, i) => ({ it, pack: i + 1 })) : [{ it, pack: null }]))
+  const labels = job.flatMap((it) => (labelCount(it) > 1 ? Array.from({ length: it.qty }, (_, i) => ({ it, pack: i + 1 })) : [{ it, pack: null }]))
   return createPortal(
     <div className="print-sheet" aria-hidden>
       {labels.map(({ it, pack }) => {
@@ -829,6 +836,11 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
   })()
   // この親から作られた加工品のうち、自分宛てに引き渡し中のもの／自分が持っていてまだ販売していないもの
   const inboxKids = myId ? it.children.map((id) => items[id]).filter((k) => k.custody.pending === myId) : []
+  const kw = kidWord(it, items)
+  const isSplit = kw.name === '入札の単位'
+  // 入札の単位に分けられるのは、市場が持っている水揚げロット（分けたものは分けない）
+  const canSplit = (!me || role === 'market') && it.unit === 'lot' && !it.parent && it.children.every((id) => items[id]?.unit === 'lot')
+  const splitRest = isSplit ? (cu.lastKg ?? it.kg) - it.children.reduce((n, id) => n + items[id].kg, 0) : 0
   const myKids = myId ? it.children.map((id) => items[id]).filter((k) => k.custody.holder === myId && !k.custody.pending && !k.sold && k.children.length === 0) : []
 
   return (
@@ -858,17 +870,17 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
               </div>
               <Text size="xs" ff="monospace" c="rgba(255,255,255,0.85)" style={{ wordBreak: 'break-all' }}>{it.id}</Text>
             </Stack>
-            {!isMobile && <QrBlock it={it} onPrint={() => onPrint([it])} size={104} onBand />}
+            {!isMobile && <QrBlock it={it} onPrint={() => onPrint([it])} size={104} onBand kid={kw.name} />}
           </Group>
         </div>
         <Box p={isMobile ? 'md' : 'lg'}>
           <Stages it={it} />
           {it.parent && <Text size="sm" c="dimmed" mb="sm">親ID <Anchor component="button" ff="monospace" size="sm" onClick={() => setSel(it.parent)}>{it.parent}</Anchor></Text>}
           <div className="custody-bar">
-            <Text size="sm"><Text span c="dimmed">{it.children.length ? '加工前の持ち主 ' : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
+            <Text size="sm"><Text span c="dimmed">{it.children.length ? (isSplit ? '分ける前の持ち主 ' : '加工前の持ち主 ') : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
             {kidsWhere.length > 0 && (
               <Text size="sm" className="custody-kids">
-                <Text span c="dimmed">加工品 {it.children.length}ロット：</Text>
+                <Text span c="dimmed">{kw.name} {it.children.length}{kw.unit}：</Text>
                 {kidsWhere.map((w, i) => <Text span key={w.label} fw={600}>{i ? '、' : ''}{w.label} {w.count}</Text>)}
               </Text>
             )}
@@ -878,19 +890,34 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           </div>
           {inboxKids.length > 0 && (
             <Button fullWidth size="lg" mb="sm" leftSection={<IconPackageImport size={20} />} onClick={() => open('bulkReceive')}>
-              加工品を受け取る（{inboxKids.length}ロット・合計 {inboxKids.reduce((n, k) => n + k.custody.lastKg, 0).toFixed(1)} kg）
+              {kw.name}を受け取る（{inboxKids.length}{kw.unit}・合計 {inboxKids.reduce((n, k) => n + k.custody.lastKg, 0).toFixed(1)} kg）
             </Button>
           )}
           {myKids.length > 0 && !isHolder && (
             <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm" mb="sm">
               {canSell && <Button leftSection={<IconBuildingStore size={18} />} onClick={() => open('bulkSell')}>加工品の販売を始める（{myKids.length}ロット）</Button>}
-              <Button leftSection={<IconPackageExport size={18} />} variant="light" onClick={() => open('bulk')}>加工品を引き渡す</Button>
+              <Button leftSection={<IconPackageExport size={18} />} variant="light" onClick={() => open('bulk')}>{kw.name}を引き渡す</Button>
             </SimpleGrid>
           )}
           {it.into ? (
             <Text size="sm" className="custody-note">加工ロット <Anchor component="button" ff="monospace" size="sm" onClick={() => setSel(it.into)}>{it.into}</Anchor> に入れました。加工品はロットから発行します。</Text>
           ) : isRecipient ? (
             <Button fullWidth size="lg" leftSection={<IconPackageImport size={20} />} onClick={() => open('receive')}>{cu.holderName} から受け取る</Button>
+          ) : canAct && isSplit ? (
+            <Stack gap="xs">
+              <Text size="sm" c="dimmed">入札の単位に分けました（{it.children.length}件）。せり・出荷は分けたものごとに記録します。</Text>
+              <Group gap={6}>
+                {it.children.map((id) => items[id]).map((k) => (
+                  <Badge key={k.id} component="button" variant="light" size="lg" tt="none" onClick={() => setSel(k.id)} style={{ cursor: 'pointer' }} rightSection={<IconChevronRight size={12} />}>
+                    {k.id.slice(-2)}・{k.kg}kg{k.custody.pending ? `・${k.custody.pendingName}へ` : k.custody.holder !== it.custody.holder ? `・${k.custody.holderName}` : ''}
+                  </Badge>
+                ))}
+              </Group>
+              <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm">
+                {canSplit && splitRest > 0.05 && <Button leftSection={<IconLayoutGrid size={18} />} variant="light" onClick={() => open('split')}>残りを分ける（{splitRest.toFixed(1)} kg）</Button>}
+                <Button leftSection={<IconPlus size={18} />} variant="light" onClick={() => open('add')}>情報を追記</Button>
+              </SimpleGrid>
+            </Stack>
           ) : canAct && it.children.length > 0 ? (
             <Stack gap="xs">
               <Text size="sm" c="dimmed">加工済みです（加工品 {it.children.length}ロット）。引き渡しはロットごとに記録します。</Text>
@@ -904,7 +931,8 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           ) : canAct ? (
             <SimpleGrid cols={isMobile ? 1 : 2} spacing="sm">
               {canProcess && <Button leftSection={<IconCut size={18} />} onClick={() => open('process')}>加工して子IDを発行</Button>}
-              <Button leftSection={<IconPackageExport size={18} />} onClick={() => open('handover')}>{role === 'market' ? '引き渡す（せり・出荷）' : '引き渡す（出荷）'}</Button>
+              {canSplit && <Button leftSection={<IconLayoutGrid size={18} />} onClick={() => open('split')}>入札の単位に分ける</Button>}
+              <Button leftSection={<IconPackageExport size={18} />} variant={canSplit ? 'light' : 'filled'} onClick={() => open('handover')}>{role === 'market' ? (canSplit ? 'まとめて引き渡す（せり・出荷）' : '引き渡す（せり・出荷）') : '引き渡す（出荷）'}</Button>
               {canSell && <Button leftSection={<IconBuildingStore size={18} />} variant="light" onClick={() => open('sell')}>販売を始める</Button>}
               <Button leftSection={<IconPlus size={18} />} variant="light" onClick={() => open('add')}>情報を追記</Button>
               {canProcess && it.kind === 'ind' && it.unit !== 'mix' && myId && <Button leftSection={<IconStack2 size={18} />} variant="light" onClick={() => open('mix')} style={{ gridColumn: '1 / -1' }}>ほかの魚とまとめて加工ロットにする</Button>}
@@ -923,10 +951,10 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           {it.children.length > 0 && (
             <Button mt="sm" variant="subtle" size="xs" leftSection={<IconPrinter size={14} />}
               onClick={() => onPrint(it.children.map((id) => items[id]))}>
-              加工品のラベルを印刷（{it.children.length}ロット・{it.children.reduce((n, id) => n + items[id].qty, 0)}枚）
+              {kw.name}のラベルを印刷（{it.children.length}{kw.unit}・{it.children.reduce((n, id) => n + labelCount(items[id]), 0)}枚）
             </Button>
           )}
-          {isMobile && <Box mt="lg"><QrBlock it={it} onPrint={() => onPrint([it])} size={104} /></Box>}
+          {isMobile && <Box mt="lg"><QrBlock it={it} onPrint={() => onPrint([it])} size={104} kid={kw.name} /></Box>}
         </Box>
       </Card>
 
@@ -1039,9 +1067,12 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
     for (const x of Object.values(items)) {
       if (x.custody.pending !== myId) continue
       const root = rootOf(items, x.id)
-      g[root.id] ??= { root, count: 0, kg: 0, from: x.custody.holderName, lots: x.kind === 'prod' }
-      g[root.id].count += 1
-      g[root.id].kg += x.custody.lastKg
+      // 元の魚・渡し手・種類（入札の単位か、それ以外か）ごとにまとめる
+      const split = x.unit === 'lot' && !!x.parent
+      const key = `${root.id}|${x.custody.holder}|${split}`
+      g[key] ??= { key, root, count: 0, kg: 0, from: x.custody.holderName, lots: x.kind === 'prod', split }
+      g[key].count += 1
+      g[key].kg += x.custody.lastKg
     }
     return Object.values(g)
   }, [items, myId])
@@ -1106,9 +1137,9 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
         <HandoverModal key={`h-${it.id}-${modal === 'handover'}`} opened={modal === 'handover'} onClose={() => setModal(null)} item={it} businesses={db.businesses} myId={me?.business?.id} myRole={me?.business?.role} busy={busy}
           onSave={(f) => run(() => handover({ itemId: it.id, ...f }), (r) => notifyRecorded('引き渡しを記録しました（相手が受け取ると持ち主が移ります）', r))} />
         <BulkHandoverModal key={`b-${it.id}-${modal === 'bulk'}`} opened={modal === 'bulk'} onClose={() => setModal(null)} item={it} items={items} businesses={db.businesses} myId={me?.business?.id} myRole={me?.business?.role} busy={busy}
-          onSave={(f) => run(() => handoverMany({ rows: f.ids.map((id) => ({ id, kg: items[id].custody.lastKg })), toId: f.toId, detail: f.detail || '出荷' }), (r) => notifyRecorded(`加工品 ${f.ids.length}ロット（合計 ${f.totalKg.toFixed(1)}kg）の引き渡しを記録しました`, r))} />
+          onSave={(f) => run(() => handoverMany({ rows: f.ids.map((id) => ({ id, kg: items[id].custody.lastKg })), toId: f.toId, detail: f.detail || '出荷' }), (r) => notifyRecorded(`${kidWord(it, items).name} ${f.ids.length}${kidWord(it, items).unit}（合計 ${f.totalKg.toFixed(1)}kg）の引き渡しを記録しました`, r))} />
         <BulkReceiveModal key={`br-${it.id}-${modal === 'bulkReceive'}`} opened={modal === 'bulkReceive'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} myBiz={myBiz} busy={busy}
-          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail, checks: f.checks }), (r) => notifyRecorded(`加工品 ${f.rows.length}ロットの受け取りを記録しました`, r))} />
+          onSave={(f) => run(() => receiveMany({ rows: f.rows, detail: f.detail, checks: f.checks }), (r) => notifyRecorded(`${kidWord(it, items).name} ${f.rows.length}${kidWord(it, items).unit}の受け取りを記録しました`, r))} />
         <BulkSellModal key={`bs-${it.id}-${modal === 'bulkSell'}`} opened={modal === 'bulkSell'} onClose={() => setModal(null)} item={it} items={items} myId={me?.business?.id} busy={busy}
           onSave={(f) => run(() => sellMany(f), (r) => notifyRecorded(`加工品 ${f.ids.length}ロットの販売開始を記録しました`, r))} />
         <ReceiveModal key={`r-${it.id}-${modal === 'receive'}`} opened={modal === 'receive'} onClose={() => setModal(null)} item={it} items={items} myBiz={myBiz} busy={busy}
@@ -1119,6 +1150,11 @@ function Manager({ items, db, sel, setSel, reload, guard, modal, setModal, pane,
             const itemId = await nextLandingId(`KSN-${code}-${ymd(new Date()).replaceAll('-', '').slice(2)}-M`, Object.keys(items))
             return { ...(await makeProcessLot({ itemId, name: f.name, inputs: f.inputs })), itemId }
           }, (r) => { pick(r.itemId); notifyRecorded(`加工ロット ${r.itemId} を作りました（${f.inputs.length}件）`, r) })} />
+        <SplitModal key={`sp-${it.id}-${modal === 'split'}`} opened={modal === 'split'} onClose={() => setModal(null)} item={it} items={items} busy={busy}
+          onSave={(f) => run(() => splitLot({ parentId: it.id, lots: f.lots }), (r) => {
+            notifyRecorded(`${f.lots.length}件に分けました（${f.lots.map((l) => l.itemId.slice(-2)).join('・')}）`, r)
+            if (f.printAfter) setPrintAfterIds(f.lots.map((l) => l.itemId))
+          })} />
         <SellModal key={`s-${it.id}-${modal === 'sell'}`} opened={modal === 'sell'} onClose={() => setModal(null)} item={it} busy={busy}
           onSave={(f) => run(() => startSale({ itemId: it.id, ...f }), (r) => notifyRecorded('販売開始を記録しました', r))} />
       </>}
@@ -1279,6 +1315,70 @@ function VesselPage({ me, db, reload }) {
   )
 }
 
+// 入札の単位に分ける（市場）：水揚げロットを、入札にかける箱・山ごとに分ける。
+// 1件ごとに重さ・尾数（おおよそ）・銘柄・体長の目安。重さの合計は水揚げの重さまで（サーバーでも確かめる）
+function SplitModal({ opened, onClose, item, items, busy, onSave }) {
+  const done = item.children.map((id) => items[id]).filter(Boolean)
+  const baseKg = item.custody.lastKg ?? item.kg
+  const doneKg = done.reduce((n, k) => n + k.kg, 0)
+  const restKg = Math.max(0, Math.round((baseKg - doneKg) * 10) / 10)
+  // 次の番号（01, 02 …）
+  const nextNo = done.reduce((m, k) => Math.max(m, Number(k.id.slice(-2)) || 0), 0) + 1
+  const perKg = item.count && item.kg ? item.count / item.kg : null
+  const countOf = (kg) => (perKg ? Math.max(1, Math.round(kg * perKg)) : 1)
+  const row = (kg) => ({ kg, count: countOf(kg), grade: item.grade ?? GRADES[1], lengthCm: '' })
+  const [rows, setRows] = useState(() => {
+    const half = Math.round((restKg / 2) * 10) / 10
+    return restKg > 0 ? [row(half), row(Math.round((restKg - half) * 10) / 10)] : [row(0)]
+  })
+  const [printAfter, setPrintAfter] = useState(true)
+  const set = (i, k, v) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: v, ...(k === 'kg' ? { count: countOf(Number(v) || 0) } : {}) } : r)))
+  const sum = Math.round(rows.reduce((n, r) => n + (Number(r.kg) || 0), 0) * 100) / 100
+  const left = Math.round((restKg - sum) * 10) / 10
+  const over = sum > restKg + 0.005
+  const ok = rows.length > 0 && rows.every((r) => Number(r.kg) > 0 && Number(r.count) >= 1) && !over
+  const idOf = (i) => `${item.id}-${String(nextNo + i).padStart(2, '0')}`
+  return (
+    <Sheet opened={opened} onClose={onClose} title="入札の単位に分ける">
+      <Stack gap="lg">
+        <InfoList rows={[['水揚げロット', `${item.name} ${baseKg} kg${item.count ? `・約${item.count}尾` : ''}`], ...(done.length ? [['分けた分', `${done.length}件・${doneKg.toFixed(1)} kg`]] : []), ['分けられる残り', `${restKg} kg`]]} />
+        <Text size="sm" c="dimmed">箱・山ごとに分けると、それぞれに番号（QR）が付き、別々の買い手にせり・出荷できます。</Text>
+        {rows.map((r, i) => (
+          <Card key={i} padding="md" withBorder radius="lg">
+            <Group justify="space-between" mb="xs">
+              <Text fw={700} ff="monospace" size="sm">{idOf(i)}</Text>
+              {rows.length > 1 && <ActionIcon variant="subtle" color="gray" aria-label="この行を消す" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}><IconTrash size={18} /></ActionIcon>}
+            </Group>
+            <Stack gap="sm">
+              <BigNumber label="重さ" value={r.kg} onChange={(v) => set(i, 'kg', v)} unit="kg" steps={[1, 10]} min={0} />
+              <BigNumber label="尾数（おおよそ）" value={r.count} onChange={(v) => set(i, 'count', v)} unit="尾" steps={[1, 10]} min={1} decimals={0} />
+              <div>
+                <Text className="field-label">銘柄（サイズの区分）</Text>
+                <SegmentedControl fullWidth data={GRADES} value={r.grade} onChange={(v) => set(i, 'grade', v)} />
+              </div>
+              <NumberInput label="体長（1尾の目安・入れなくてもよい）" suffix=" cm" min={0} max={999} allowDecimal={false} value={r.lengthCm} onChange={(v) => set(i, 'lengthCm', v)}
+                styles={{ label: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }} />
+            </Stack>
+          </Card>
+        ))}
+        <Button variant="light" leftSection={<IconPlus size={18} />} onClick={() => setRows((rs) => [...rs, row(Math.max(0, left))])}>箱・山を足す</Button>
+        <Group justify="space-between">
+          <Text size="sm" fw={700}>合計 {sum.toFixed(1)} kg（{rows.length}件）</Text>
+          <Text size="sm" c={over ? 'red' : 'dimmed'} fw={over ? 700 : 400}>{over ? `水揚げの重さを ${(sum - restKg).toFixed(1)} kg 超えています` : `残り ${left.toFixed(1)} kg`}</Text>
+        </Group>
+        <Checkbox checked={printAfter} onChange={(e) => setPrintAfter(e.currentTarget.checked)} label="分けたあと、箱に貼るラベル（QR）を印刷する" />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>やめる</Button>
+          <Button loading={busy} disabled={!ok} leftSection={<IconLayoutGrid size={18} />}
+            onClick={() => onSave({ printAfter, lots: rows.map((r, i) => ({ itemId: idOf(i), weightKg: Number(r.kg), count: Math.trunc(Number(r.count)), grade: r.grade, lengthCm: Number(r.lengthCm) > 0 ? Math.round(Number(r.lengthCm)) : null })) })}>
+            {rows.length}件に分ける
+          </Button>
+        </Group>
+      </Stack>
+    </Sheet>
+  )
+}
+
 // 引き渡す（せり結果・出荷）：渡す相手を選ぶ。重さは任意（入れると受け取り時に増減を確かめられる）
 // 立場ごとに、次に渡すことが多い相手（一覧の上に並べる）
 const NEXT_ROLES = { market: ['processor', 'exporter', 'retailer'], processor: ['retailer', 'exporter', 'processor'], retailer: ['retailer'], exporter: ['retailer'] }
@@ -1351,11 +1451,11 @@ function BulkHandoverModal({ opened, onClose, item, items, businesses, myId, myR
   const toggle = (id) => setPicked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const roleName = { market: '市場', processor: '加工', retailer: '小売', exporter: '輸出' }
   return (
-    <Sheet opened={opened} onClose={onClose} title="加工品を引き渡す">
+    <Sheet opened={opened} onClose={onClose} title={`${kidWord(item, items).name}を引き渡す`}>
       <Stack gap="lg">
         <div>
           <Group justify="space-between" mb={8}>
-            <Text className="field-label" mb={0}>渡す加工品を選ぶ</Text>
+            <Text className="field-label" mb={0}>渡す{kidWord(item, items).name}を選ぶ</Text>
             <Text size="sm" fw={700}>{sel.length}ロット{sel.reduce((n, k) => n + k.qty, 0) > sel.length ? `（${sel.reduce((n, k) => n + k.qty, 0)}パック）` : ''}・合計 {totalKg.toFixed(1)} kg</Text>
           </Group>
           <div className="inset-list glass">
@@ -1413,17 +1513,17 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, myBiz, busy, onS
   const expected = sel.reduce((n, k) => n + k.custody.lastKg, 0)
   const [total, setTotal] = useState(Math.round(expected * 100) / 100)
   const [detail, setDetail] = useState('')
-  const packs = sel.reduce((n, k) => n + k.qty, 0)
+  const packs = sel.reduce((n, k) => n + labelCount(k), 0)
   const d = expected > 0 && Number(total) > 0 ? weightDrift({ prevKg: expected, kg: Number(total) }) : null
   const toggle = (id) => setPicked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
   const from = kids[0]?.custody.holderName
   return (
-    <Sheet opened={opened} onClose={onClose} title="加工品を受け取る">
+    <Sheet opened={opened} onClose={onClose} title={`${kidWord(item, items).name}を受け取る`}>
       <Stack gap="lg">
         <div>
           <Group justify="space-between" mb={8}>
-            <Text className="field-label" mb={0}>{from} から届いた加工品</Text>
-            <Text size="sm" fw={700}>{sel.length}ロット{packs > sel.length ? `（${packs}パック）` : ''}・{expected.toFixed(1)} kg</Text>
+            <Text className="field-label" mb={0}>{from} から届いた{kidWord(item, items).name}</Text>
+            <Text size="sm" fw={700}>{sel.length}{kidWord(item, items).unit}{packs > sel.length ? `（${packs}パック）` : ''}・{expected.toFixed(1)} kg</Text>
           </Group>
           <div className="inset-list glass">
             {kids.map((k) => (
@@ -1453,7 +1553,7 @@ function BulkReceiveModal({ opened, onClose, item, items, myId, myBiz, busy, onS
             onClick={() => {
               const ratio = Number(total) / expected
               onSave({ rows: sel.map((k) => ({ id: k.id, kg: Math.round(k.custody.lastKg * ratio * 100) / 100 })), detail, checks: checksPayload(checks) })
-            }}>{checks.loading ? '照合中…' : sel.length ? `${sel.length}ロットを受け取る` : '受け取るロットを選んでください'}</Button>
+            }}>{checks.loading ? '照合中…' : sel.length ? `${sel.length}${kidWord(item, items).unit}を受け取る` : '受け取るものを選んでください'}</Button>
         </Group>
       </Stack>
     </Sheet>
@@ -1691,6 +1791,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, declarations = [],
   const [catchTo, setCatchTo] = useState(ymd(new Date(Date.now() - 86400000)))
   const [kg, setKg] = useState(SPECIES[0].kg)
   const [count, setCount] = useState(1)
+  const [lengthCm, setLengthCm] = useState('') // 体長（任意）。入れると消費者の画面に魚の立体が出る
   const [grade, setGrade] = useState(GRADES[1])
   const [photo, setPhoto] = useState(null)
   const sp = SPECIES.find((x) => x.name === species)
@@ -1794,11 +1895,15 @@ function RegisterModal({ opened, onClose, busy, items, ships, declarations = [],
           <div>
             <Text className="field-label">銘柄（サイズの区分）</Text>
             <SegmentedControl fullWidth data={GRADES} value={grade} onChange={setGrade} />
-            <Text size="xs" c="dimmed" mt={6}>せりは船と銘柄ごとに行われるので、銘柄ごとに1つのIDにします（1つのまとまりは1社が買う）</Text>
+            <Text size="xs" c="dimmed" mt={6}>船・水揚げ日・銘柄ごとに1つのIDにします。入札のときに、箱・山ごとに分けられます</Text>
           </div>
         )}
         {sp.lot && <BigNumber label="尾数（おおよそ）" value={count} onChange={setCount} unit="尾" steps={[1, 10]} min={1} decimals={0} />}
         <BigNumber label={sp.lot ? '重量（合計）' : '重量'} value={kg} onChange={setKg} unit="kg" steps={sp.lot ? [10, 100] : [1, 10]} min={0.1} />
+        <div>
+          <BigNumber label={sp.lot ? '体長（1尾の目安・入れなくてもよい）' : '体長（入れなくてもよい）'} value={lengthCm} onChange={setLengthCm} unit="cm" steps={[1, 10]} min={0} decimals={0} />
+          <Text size="xs" c="dimmed" mt={6}>{sp.lot ? '入れると、消費者の画面に平均的な1尾の立体が、人と並んで出ます' : '入れると、消費者の画面にこの魚の立体（実際の大きさを人と比べたもの）が出ます'}</Text>
+        </div>
         {!decl && <div>
           <Text className="field-label">漁獲期間</Text>
           <SimpleGrid cols={2} spacing="xs">
@@ -1818,7 +1923,7 @@ function RegisterModal({ opened, onClose, busy, items, ships, declarations = [],
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>やめる</Button>
           <Button loading={busy} disabled={!ship || !itemId || !periodOk || !(Number(kg) > 0) || (sp.lot && !(Number(count) >= 1))} leftSection={<IconTag size={18} />}
-            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo, declarationId: decl?.id ?? null })}>
+            onClick={() => onSave({ itemId, species, lot: sp.lot, grade, count: Math.trunc(Number(count)), weightKg: Number(kg), shipId: ship.id, catchArea: area, landingPort: port, catchFrom, catchTo, landedAt, photo, declarationId: decl?.id ?? null, lengthCm: Number(lengthCm) > 0 ? Math.round(Number(lengthCm)) : null })}>
             {sp.lot ? '水揚げロットのIDを発行' : '個体IDを発行'}
           </Button>
         </Group>

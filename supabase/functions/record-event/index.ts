@@ -12,6 +12,10 @@
 //   自分が持っている・まだ加工していない魚を何尾かまとめて1つの加工ロット（process_lot）にする。
 //   加工ロットに born（入れた魚と重さの一覧 payload.inputs を指紋に含める）、入れた魚それぞれに process（payload.into）を記録する。
 //   入れた魚は、そのあと加工・引き渡し・販売できない（加工ロットから加工品を発行する）
+// 入札の単位に分ける（仕分け）：{ split: { parentId, lots: [{ itemId, weightKg, count, grade?, lengthCm? }, ...] }, photo?, location? }（市場だけ）
+//   自分が持っている水揚げロットを、入札にかける箱・山ごとに子の水揚げロット（ID は 親ID-01, -02 …）に分ける。
+//   子の重さの合計は元の重さを超えられない。子に split（payload.from＝元）、元に split（payload.lots＝分けた一覧）を記録する。
+//   分けたあとの元は、せり・出荷・販売できない（分けたものごとに記録する）。チェーンでは子を元の子として発行する（水揚げと同じ種類）
 // 受け渡しの鎖：せり・出荷で payload.toId に渡す相手を指定 → 相手が receive すると持ち主が移る。
 //   加工・せり・出荷・保管・QR有効化・販売開始は今の持ち主だけ。受け取りは指定された相手だけ。それ以外は拒否する
 // 秘密情報（Supabase の secrets に登録）：
@@ -40,12 +44,12 @@ const ABI = [
   'function recordBatch(bytes32[] itemIds, uint8 kind, bytes32[] dataHashes)',
 ]
 // 記録の種類（コントラクトの番号）と、書ける役割（コントラクトの初期値と同じ）
-const KIND: Record<string, number> = { catch: 1, landing: 2, auction: 3, receive: 4, ship: 5, process: 6, born: 6, sell: 7, storage: 8, fix: 9 }
+const KIND: Record<string, number> = { catch: 1, landing: 2, split: 2, auction: 3, receive: 4, ship: 5, process: 6, born: 6, sell: 7, storage: 8, fix: 9 }
 const ROLE_BIT: Record<string, number> = { vessel: 1, market: 2, processor: 4, retailer: 8, exporter: 16 }
 const TRADE = 2 | 4 | 8 | 16
 const ALLOWED: Record<number, number> = { 1: 1, 2: 2, 3: 2, 4: TRADE, 5: TRADE, 6: 4 | 8, 7: 8, 8: TRADE, 9: TRADE | 1 }
 const KIND_NAME: Record<string, string> = {
-  catch: '漁獲の申告', landing: '水揚げの登録', auction: 'せり', receive: '受け取り', ship: '出荷', process: '加工', born: '加工品の発行',
+  catch: '漁獲の申告', landing: '水揚げの登録', split: '入札の単位に分けること', auction: 'せり', receive: '受け取り', ship: '出荷', process: '加工', born: '加工品の発行',
   sell: '販売開始', storage: '保管', fix: '訂正',
 }
 const ROLE_NAME: Record<number, string> = { 1: '漁船', 2: '市場', 4: '加工', 8: '小売', 16: '輸出' }
@@ -153,7 +157,7 @@ function custodyOf(evs: any[]) {
     if (e.type === 'process' && e.payload?.into) into = e.payload.into
     const kg = Number(e.payload?.weight_kg)
     if (Number.isFinite(kg) && kg > 0) lastKg = kg
-    if (e.type === 'landing' || e.type === 'born') { holder = e.actor; pending = null }
+    if (e.type === 'landing' || e.type === 'born' || (e.type === 'split' && e.payload?.from)) { holder = e.actor; pending = null }
     else if ((e.type === 'auction' || e.type === 'ship') && e.payload?.to?.id) pending = e.payload.to.id
     else if (e.type === 'receive') { holder = e.actor; pending = null }
   }
@@ -274,6 +278,7 @@ async function snapshot(supa: any, row: Record<string, unknown>, parentId: strin
       kind: row.kind, species: row.species, name: row.name, weight_kg: row.weight_kg,
       ...(row.kind === 'catch_lot' ? { quantity: row.quantity } : {}),
       catch_area: row.catch_area, landed_at: row.landed_at, landing_port: row.landing_port, ship,
+      ...(parentId ? { parent_id: parentId } : {}),
     }
   }
   const { data: product } = row.product_id
@@ -318,6 +323,8 @@ async function handleBatch(supa: any, actor: string, body: any) {
     if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。加工できるのは持ち主だけです`)
     if (c.pending) throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで加工できません`)
     if (c.into) throw new Error(`この魚は加工ロット ${c.into} に入れました。加工品は加工ロットから発行してください`)
+    const { data: lots } = await supa.from('items').select('id').eq('parent_id', parentId).eq('kind', 'catch_lot').limit(1)
+    if (lots?.length) throw new Error('この水揚げロットは入札の単位に分けました。加工品は分けたものから発行してください')
     const { data: parent } = await supa.from('items').select('species').eq('id', parentId).maybeSingle()
     if (!parent) throw new Error(`親ID ${parentId} が見つかりません`)
     parentSpecies = parent.species
@@ -334,8 +341,8 @@ async function handleBatch(supa: any, actor: string, body: any) {
     }
     if (type === 'ship' || type === 'auction' || type === 'sell') {
       // 加工済み（子IDがある）のものは丸ごとは渡せない・売れない
-      const { data: kids } = await supa.from('items').select('parent_id').in('parent_id', ids).limit(1)
-      if (kids?.length) throw new Error(`${kids[0].parent_id} は加工済みです。加工品ごとに記録してください`)
+      const { data: kids } = await supa.from('items').select('parent_id, kind').in('parent_id', ids).limit(1)
+      if (kids?.length) throw new Error(kids[0].kind === 'catch_lot' ? `${kids[0].parent_id} は入札の単位に分けました。分けたものごとに記録してください` : `${kids[0].parent_id} は加工済みです。加工品ごとに記録してください`)
     }
     const holderNames: Record<string, string> = {}
     for (const b of list) {
@@ -569,6 +576,122 @@ async function handleMix(supa: any, actor: string, body: any) {
   }
 }
 
+// ==== 入札の単位に分ける（仕分け） ====
+const SPLIT_MAX = 50
+// deno-lint-ignore no-explicit-any
+async function handleSplit(supa: any, actor: string, body: any) {
+  const { parentId, lots } = body.split ?? {}
+  if (typeof parentId !== 'string' || !parentId) throw new Error('分ける水揚げロットを指定してください')
+  if (!Array.isArray(lots) || lots.length < 1) throw new Error('分ける内容を入れてください')
+  if (lots.length > SPLIT_MAX) throw new Error(`一度に分けられるのは ${SPLIT_MAX} 件までです`)
+  await checkRole(supa, actor, 'split')
+
+  const { data: parent } = await supa.from('items').select('*').eq('id', parentId).maybeSingle()
+  if (!parent) throw new Error(`${parentId} が見つかりません`)
+  if (parent.kind !== 'catch_lot' || parent.parent_id) throw new Error('分けられるのは水揚げロットだけです（分けたものをさらに分けることはできません）')
+  const { data: pevs, error: pe } = await supa.from('events').select('id, type, actor, payload, hash').eq('item_id', parentId).order('id')
+  if (pe) throw pe
+  const c = custodyOf(pevs ?? [])
+  if (c.holder !== actor) throw new Error(`この水揚げロットを今持っているのは ${await bizName(supa, c.holder)} です。分けられるのは持ち主だけです`)
+  if (c.pending) throw new Error(`この水揚げロットは ${await bizName(supa, c.pending)} へ引き渡し中です`)
+  if (c.into) throw new Error(`この水揚げロットは加工ロット ${c.into} に入れました`)
+  const { data: kids } = await supa.from('items').select('id, kind, weight_kg').eq('parent_id', parentId)
+  if ((kids ?? []).some((k: { kind: string }) => k.kind !== 'catch_lot')) throw new Error('この水揚げロットは、もう加工品を発行しています')
+
+  // 1件ずつの中身を確かめる（ID は 親ID-01 の形、重さ・尾数は正の数）
+  if (!/^[A-Z0-9-]+$/.test(parentId)) throw new Error('水揚げロットのIDが正しくありません')
+  const idRe = new RegExp('^' + parentId + '-\\d{2}$')
+  const rows = lots.map((l: Record<string, unknown>) => {
+    const id = String(l.itemId ?? '')
+    if (!idRe.test(id)) throw new Error(`ID ${id} は「${parentId}-01」の形にしてください`)
+    const kg = Math.round(Number(l.weightKg) * 100) / 100
+    const count = Math.trunc(Number(l.count))
+    if (!(kg > 0)) throw new Error(`${id} の重さを正しく入れてください`)
+    if (!(count >= 1 && count <= 1000000)) throw new Error(`${id} の尾数を正しく入れてください`)
+    const grade = typeof l.grade === 'string' && l.grade.trim() ? l.grade.trim().slice(0, 20) : null
+    const len = Math.round(Number(l.lengthCm))
+    return { id, kg, count, grade, lengthCm: len > 0 && len < 1000 ? len : null }
+  })
+  const ids = rows.map((r: { id: string }) => r.id)
+  if (new Set(ids).size !== ids.length) throw new Error('同じIDが2回含まれています')
+  const { data: exists } = await supa.from('items').select('id').in('id', ids).limit(1)
+  if (exists?.length) throw new Error(`ID ${exists[0].id} はすでに使われています`)
+
+  // 分けた重さの合計は、元の重さ（最後に量った重さ）を超えられない
+  const baseKg = c.lastKg ?? Number(parent.weight_kg)
+  const before = (kids ?? []).reduce((n: number, k: { weight_kg: number }) => n + Number(k.weight_kg), 0)
+  const sum = rows.reduce((n: number, r: { kg: number }) => n + r.kg, 0)
+  if (before + sum > baseKg + 0.005) throw new Error(`分けた重さの合計（${(before + sum).toFixed(2)}kg）が、水揚げの重さ（${baseKg}kg）を超えます`)
+
+  const photo = body.photo ? await savePhoto(supa, parentId, body.photo) : null
+  const where = await locate(supa, actor, body.location ?? null)
+
+  // 子の水揚げロットを作る（船・海域・水揚げ日・港は元から写す）
+  const items = rows.map((r: { id: string; kg: number; count: number }) => ({
+    id: r.id, kind: 'catch_lot', species: parent.species, name: parent.name, weight_kg: r.kg, quantity: r.count,
+    ship_id: parent.ship_id, catch_area: parent.catch_area, landed_at: parent.landed_at, landing_port: parent.landing_port,
+    parent_id: parentId, created_by: actor,
+  }))
+  const { error: e1 } = await supa.from('items').insert(items)
+  if (e1) throw e1
+
+  // 記録：子それぞれに split（元と重さ）、元に split（分けた一覧）
+  const t0 = Date.now()
+  const events = []
+  for (const [i, r] of rows.entries()) {
+    const snap = await snapshot(supa, items[i], parentId)
+    let p: Record<string, unknown> = {
+      detail: `入札の単位：${r.grade ? `${r.grade}・` : ''}約${r.count}尾・${r.kg}kg（${parentId} から）`,
+      from: { id: parentId, kg: baseKg }, weight_kg: r.kg, quantity: r.count, item: snap,
+      ...(r.grade ? { grade: r.grade } : {}), ...(r.lengthCm ? { length_cm: r.lengthCm } : {}),
+    }
+    if (photo) p = { ...p, photo }
+    if (where) p = { ...p, location: where }
+    const createdAt = new Date(t0 + i).toISOString()
+    const hash = await sha256Hex(canonical({ itemId: r.id, type: 'split', actor, payload: p, prevHash: null, createdAt }))
+    events.push({ item_id: r.id, type: 'split', actor, payload: p, prev_hash: null, hash, created_at: createdAt })
+  }
+  {
+    let p: Record<string, unknown> = {
+      detail: `入札の単位に分けた：${rows.length}件・${Math.round(sum * 100) / 100}kg`,
+      lots: rows.map((r: { id: string; kg: number; count: number; grade: string | null }) => ({ id: r.id, kg: r.kg, count: r.count, grade: r.grade })),
+    }
+    if (photo) p = { ...p, photo }
+    if (where) p = { ...p, location: where }
+    const prevHash = pevs?.at(-1)?.hash ?? null
+    const createdAt = new Date(t0 + rows.length).toISOString()
+    const hash = await sha256Hex(canonical({ itemId: parentId, type: 'split', actor, payload: p, prevHash, createdAt }))
+    events.push({ item_id: parentId, type: 'split', actor, payload: p, prev_hash: prevHash, hash, created_at: createdAt })
+  }
+  const { data: saved, error: e2 } = await supa.from('events').insert(events).select('id, item_id, hash')
+  if (e2) throw e2
+
+  // チェーン：子を元の子として発行し（水揚げと同じ種類）、元に追記する。失敗しても DB の記録は残っているので ok で返す
+  const registry = Deno.env.get('REGISTRY_ADDRESS')
+  if (!registry) return { ok: true, count: saved.length, ids, txHash: null }
+  try {
+    const keys = JSON.parse(Deno.env.get('ISSUER_KEYS') ?? '{}')
+    if (!keys[actor]) throw new Error(`事業者 ${actor} の署名鍵が ISSUER_KEYS にありません`)
+    const wallet = new ethers.Wallet(keys[actor], new ethers.JsonRpcProvider(Deno.env.get('CHAIN_RPC_URL') ?? Deno.env.get('AMOY_RPC_URL')))
+    const reg = new ethers.Contract(registry, ABI, wallet)
+    let nonce = await wallet.getNonce('pending')
+    const byId = Object.fromEntries(saved.map((x: { item_id: string; id: number; hash: string }) => [x.item_id, x]))
+    const parentKey = await itemKey(parentId)
+    let lastTx: string | null = null
+    for (const id of ids) {
+      const tx = await reg.issue(await itemKey(id), parentKey, KIND.split, byId[id].hash, { nonce: nonce++, gasLimit: 250000 })
+      await supa.from('events').update({ tx_hash: tx.hash }).eq('id', byId[id].id)
+    }
+    const tx = await reg.record(parentKey, KIND.split, byId[parentId].hash, { nonce: nonce++, gasLimit: 150000 })
+    await supa.from('events').update({ tx_hash: tx.hash }).eq('id', byId[parentId].id)
+    lastTx = tx.hash
+    return { ok: true, count: saved.length, ids, txHash: lastTx }
+  } catch (e) {
+    const reason = String((e as { shortMessage?: string })?.shortMessage ?? (e as Error)?.message ?? e)
+    return { ok: true, count: saved.length, ids, txHash: null, chainError: reason }
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -594,6 +717,10 @@ Deno.serve(async (req) => {
     // 漁獲の申告（漁船だけ）
     if (reqBody.declare) return json(await handleDeclare(supa, actor, reqBody))
 
+    // 入札の単位に分けるとき
+    if (reqBody.split) return json(await handleSplit(supa, actor, reqBody))
+    if (type === 'split') throw new Error('入札の単位に分けるときは split の形で送ってください')
+
     // 記録の種類ごとに、書ける役割か（水揚げは市場だけ、など。チェーンと同じ決まり）
     if (type !== 'activate') await checkRole(supa, actor, type)
 
@@ -604,6 +731,8 @@ Deno.serve(async (req) => {
       if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。加工できるのは持ち主だけです`)
       if (c.pending) throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで加工できません`)
       if (c.into) throw new Error(`この魚は加工ロット ${c.into} に入れました。加工品は加工ロットから発行してください`)
+      const { data: lots } = await supa.from('items').select('id').eq('parent_id', parentId).eq('kind', 'catch_lot').limit(1)
+      if (lots?.length) throw new Error('この水揚げロットは入札の単位に分けました。加工品は分けたものから発行してください')
     } else if (type !== 'landing') {
       const c = await custody(supa, itemId)
       if (c.into && type !== 'fix') throw new Error(`この魚は加工ロット ${c.into} に入れました。記録は加工ロットに足してください`)
@@ -618,8 +747,8 @@ Deno.serve(async (req) => {
         if (c.holder && c.holder !== actor) throw new Error(`この魚を今持っているのは ${await bizName(supa, c.holder)} です。記録できるのは持ち主だけです`)
         // 加工済み（子IDがある）の親は、切り分けたあとなので丸ごとは渡せない・売れない。加工品ごとに記録する
         if (type === 'auction' || type === 'ship' || type === 'sell') {
-          const { data: kids } = await supa.from('items').select('id').eq('parent_id', itemId).limit(1)
-          if (kids?.length) throw new Error('この魚は加工済みです。引き渡し・販売は加工品ごとに記録してください')
+          const { data: kids } = await supa.from('items').select('id, kind').eq('parent_id', itemId).limit(1)
+          if (kids?.length) throw new Error(kids[0].kind === 'catch_lot' ? 'この水揚げロットは入札の単位に分けました。せり・出荷は分けたものごとに記録してください' : 'この魚は加工済みです。引き渡し・販売は加工品ごとに記録してください')
         }
         if (c.pending && type !== 'auction' && type !== 'ship') throw new Error(`この魚は ${await bizName(supa, c.pending)} へ引き渡し中です。受け取られるまで記録できません`)
         if ((type === 'auction' || type === 'ship') && payload.toId) {

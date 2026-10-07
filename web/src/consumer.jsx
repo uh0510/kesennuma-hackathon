@@ -13,6 +13,7 @@ import { checkAis } from './lib/ais.js'
 import { STR, EV_LABEL, term, useLang } from './i18n.jsx'
 import { BRAND } from './brand.js'
 import { ProofLab } from './proof.jsx'
+import { Fish3D } from './fish3d.jsx'
 import { useLook, cssVar } from './theme.js'
 import { FishMark } from './logo.jsx'
 
@@ -721,8 +722,8 @@ function Family({ items, it, t, lang }) {
         <div className="eyebrow-dark">WEIGHT BALANCE</div>
         <h2 className="story-h2">{unprocessed
           ? <>{tr(parent.name)} <CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" /><br />→ {t.notProcessed}</>
-          : t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, tr(parent.name), kids.length)}</h2>
-        <p className="story-lead">{parent.unit === 'lot' ? t.familyLeadLot : parent.unit === 'mix' ? t.familyLeadMix : t.familyLead}</p>
+          : t.familyTitle(<CountUp value={parent.kg} decimals={parent.kg % 1 ? 1 : 0} suffix=" kg" />, parent.unit === 'lot' && parent.parent ? `${tr(parent.name)} ${t.subTitle(parent.id.slice(-2), tr(parent.grade))}` : tr(parent.name), kids.length)}</h2>
+        <p className="story-lead">{parent.unit === 'lot' ? (parent.parent ? t.familyLeadSub : t.familyLeadLot) : parent.unit === 'mix' ? t.familyLeadMix : t.familyLead}</p>
       </motion.div>
       {inputs.length > 0 && (
         <>
@@ -829,6 +830,54 @@ function LangToggle({ lang, setLang }) {
   )
 }
 
+// 魚の大きさ：記録した体長・重さで魚の立体を作り、人（170cm）と並べる
+// 1尾：その魚。水揚げロット：体長（1尾の目安）と平均の重さ（合計÷尾数）で1尾
+// 加工ロットの商品：原料を魚種ごとに1尾（体長は原料の平均、寸法線には幅）。ふつうは1種類、盛り合わせなら魚種の数だけ
+function FishSize({ origins, t, lang }) {
+  const [look] = useLook()
+  const reduce = useReducedMotion()
+  const mix = origins.length > 1
+  const src = origins.filter((o) => o.unit === 'fish' || o.unit === 'lot')
+  // 原料1件ずつ：体長・1尾の重さ・尾数
+  const each = src.map((o) => {
+    const total = o.unit === 'lot' ? Math.max(1, Number(o.count) || 1) : 1
+    return { species: o.species, kg: o.kg, total, lot: o.unit === 'lot', lengthCm: o.info.lengthCm }
+  }).filter((x) => x.lengthCm)
+  const groups = mix
+      // 加工ロット：魚種ごとにまとめる（尾数で重みをつけた平均）
+      ? Object.values(each.reduce((m, x) => {
+        const g = (m[x.species] ??= { species: x.species, n: 0, len: 0, kg: 0, min: Infinity, max: 0, total: 0 })
+        g.n += x.total; g.len += x.lengthCm * x.total; g.kg += x.kg; g.total += x.total
+        g.min = Math.min(g.min, x.lengthCm); g.max = Math.max(g.max, x.lengthCm); g.approx ||= x.lot
+        return m
+      }, {})).map((g) => ({ species: g.species, lengthCm: Math.round(g.len / g.n), kg: Math.round((g.kg / g.n) * 10) / 10, min: g.min, max: g.max, total: g.total, approx: g.approx, range: true }))
+      : each.map((x) => ({ ...x, kg: Math.round((x.kg / x.total) * 10) / 10, min: x.lengthCm, max: x.lengthCm }))
+  if (!groups.length) return null
+  const one = groups.length === 1 ? groups[0] : null
+  const lenText = (g) => (g.min === g.max ? `${g.min}` : `${g.min}〜${g.max}`)
+  const missing = src.length - each.length
+  const notes = [t.sizeNote, missing > 0 && t.sizeMissing(missing)].filter(Boolean)
+  return (
+    <section className="story-section size-section">
+      <motion.div {...reveal}>
+        <div className="eyebrow-dark">SIZE</div>
+        <h2 className="story-h2">{one ? t.sizeTitle : t.sizeTitleMix(groups.length)}</h2>
+      </motion.div>
+      {one && (
+        <div className="size-stats">
+          <div><b>{lenText(one)}<small> cm</small></b><span className="stat-label">{one.range ? t.sizeLengthMix : one.lot ? t.sizeLengthLot : t.sizeLength}</span></div>
+          {!one.range && <div><b>{one.kg}<small> kg</small></b><span className="stat-label">{one.lot ? t.sizeWeightLot : t.sizeWeight}</span></div>}
+          {(one.lot || one.range) && <div><b>{one.lot || one.approx ? t.sizeCount(one.total) : one.total}<small>{t.sizeCountUnit}</small></b><span className="stat-label">{one.range ? t.sizeCountMix : t.sizeCountLabel}</span></div>}
+        </div>
+      )}
+      <Fish3D reduce={!!reduce} rim={look === 'sea' ? [0.36, 0.81, 0.85] : [0.75, 0.8, 0.9]} personLabel={t.sizePerson}
+        fishes={groups.map((x) => ({ ...x, label: one ? t.sizeFishLen(lenText(x), x.lot && !x.range) : `${term(lang, x.species)} ${lenText(x)}cm` }))}
+        label={groups.map((x) => t.sizeAlt(term(lang, x.species), lenText(x))).join(' / ')} />
+      <div className="size-note">{notes.join(' ・ ')}</div>
+    </section>
+  )
+}
+
 function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const t = STR[lang]
   const tr = (x) => term(lang, x)
@@ -839,8 +888,11 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
   const main = useMemo(() => [...ancestors(items, cur), it], [items, cur])
   const lot = main[0].unit === 'mix' ? main[0] : null
   const origins = useMemo(() => (lot ? lot.info.inputs.map((id) => items[id]).filter(Boolean) : [main[0]]), [main])
-  const chain = useMemo(() => (lot ? [...origins, ...main] : main), [main, origins])
-  const root = origins[0] ?? main[0]
+  // 加工ロットに入れたのが入札の単位なら、その元の水揚げロットも照合する（記録と写真・船の照合は元にある）
+  const chain = useMemo(() => (lot ? [...new Set(origins.flatMap((o) => [...ancestors(items, o.id), o])), ...main] : main), [main, origins])
+  const root = (origins[0] && ancestors(items, origins[0].id)[0]) ?? origins[0] ?? main[0]
+  // 入札の単位（水揚げロットを分けたもの）を通ってきたとき
+  const sub = main.find((c) => c.unit === 'lot' && c.parent) ?? null
   const ships = [...new Set(origins.map((o) => o.info.shipName).filter(Boolean))]
   const verify = useVerifyAll(chain)
   const journeyRef = useRef(null)
@@ -890,6 +942,8 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
     const evs = main.flatMap((c) => c.rawEvents.map((e) => ({ e, c }))).filter(({ e }) => EV[e.type]).sort((a, b) => a.e.id - b.e.id)
     for (const { e, c } of evs) {
       const ev = c.events.find((x) => x.id === e.id)
+      // 仕分け：入札の単位の側だけ出す（元の水揚げロットへの「分けた」記録は出さない）
+      if (e.type === 'split') { if (e.payload?.from) list.push({ key: e.id, ...EV.split, title: t.subTitle(c.id.slice(-2), tr(e.payload.grade)), big: c.kg, unit: 'kg', lines: [t.approxFish(c.count), t.subOf(e.payload.from.kg), tr(ev.who)], at: e.created_at }); continue }
       if (e.type === 'landing') list.push({ key: e.id, ...EV.landing, title: tr(c.info.port ?? '気仙沼港'), big: c.kg, unit: 'kg', lines: [t.landedOn(ymd(e.created_at)), tr(ev.who)], at: e.created_at })
       else if (e.type === 'born') list.push({ key: e.id, ...EV.born, title: tr(c.name), big: c.kg, unit: 'kg', lines: [tr(ev.who), t.processedOn(ymd(e.created_at)), c.info.storage && t.storage(tr(c.info.storage))].filter(Boolean), at: e.created_at })
       else if (e.type === 'receive') list.push({ key: e.id, ...EV.receive, title: tr(ev.who), lines: [ev.from && t.receivedFrom(tr(ev.from.name)), ev.wc && `${ev.wc.prev_kg} → ${ev.wc.kg} kg`, when(e.created_at)].filter(Boolean), at: e.created_at })
@@ -934,6 +988,7 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
             ? <>{pack && pack <= it.qty ? t.packNo(pack, it.qty) : t.lotPack(it.unitKg >= 1 ? `${it.unitKg}kg` : `${Math.round(it.unitKg * 1000)}g`, it.qty)}<br />{t.meta(it.kg, ships.map(tr).join('・'), tr(root.species), true).replace(/^[^・·]*[・·]\s*/, '')}</>
             : t.meta(it.kg, ships.map(tr).join('・'), tr(root.species), it.kind === 'prod')}
           {/* 水揚げロット：1尾ではなく「どの船が、いつ、どのくらい揚げたまとまりか」を出す */}
+          {sub && <><br />{t.fromSub(sub.id.slice(-2), tr(sub.grade), sub.count, sub.kg)}</>}
           {!lot && root.unit === 'lot' && <><br />{t.fromLot(root.info.landedAt ? new Date(root.info.landedAt).toLocaleDateString(lang === 'en' ? 'en-US' : 'ja-JP', { timeZone: 'Asia/Tokyo', month: lang === 'en' ? 'short' : 'numeric', day: 'numeric' }) : '', tr(root.info.shipName), tr(root.species), tr(root.grade), root.count, root.kg)}</>}
         </motion.p>
         <Seal verify={verify} t={t} />
@@ -946,6 +1001,9 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
         </div>
         </div>
       </section>
+
+      {/* ---- 大きさ：体長が記録されている魚を、人と並べた立体で ---- */}
+      <FishSize origins={sub ? [{ ...sub, info: { ...sub.info, lengthCm: sub.info.lengthCm ?? root.info.lengthCm } }] : origins} t={t} lang={lang} />
 
       {/* ---- 旅の地図 ---- */}
       <section className="map-section">
@@ -993,18 +1051,11 @@ function Story({ items, cur, all, setSel, demo, lang, setLang, pack }) {
       {/* ---- 1尾から生まれた加工品 ---- */}
       <Family items={items} it={it} t={t} lang={lang} />
 
-      {/* ---- 記録の証明：その場で計算し直し、書き換えも試せる ---- */}
+      {/* ---- 改ざんチェック：見る人が自分で数字を書き換えて、見破られるのを確かめる ---- */}
       <section className="story-section proof-section">
         <motion.div {...reveal}>
           <div className="eyebrow-dark">PROOF</div>
           <h2 className="story-h2">{t.proofTitle}</h2>
-          <p className="story-lead">
-            {t.proofLead}{lang === 'en' ? ' ' : ''}
-            {verify?.onchain ? t.proofOnchain
-              : verify?.chains?.includes('pending') ? t.proofPending
-                : verify?.chains?.includes('none') ? t.proofNone
-                  : verify?.chains?.includes('off') ? t.proofOff : ''}
-          </p>
         </motion.div>
         <ProofLab chain={chain} t={t} lang={lang} when={when} />
       </section>
