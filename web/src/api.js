@@ -41,7 +41,8 @@ export async function signIn(email, password) {
   const { error } = await supabase.auth.signInWithPassword({ email, password })
   if (error) throw new Error('ログインできませんでした：' + error.message)
 }
-export const signOut = () => supabase.auth.signOut()
+// この端末だけログアウトする（標準のままだと、同じアカウントのほかの端末もすべてログアウトされる）
+export const signOut = () => supabase.auth.signOut({ scope: 'local' })
 
 // ログイン中のユーザーが所属する事業者（未ログインなら null）
 export async function fetchMe() {

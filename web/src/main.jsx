@@ -877,7 +877,7 @@ function Detail({ items, it, setSel, busy, open, run, guard, isMobile, onBack, m
           <Stages it={it} />
           {it.parent && <Text size="sm" c="dimmed" mb="sm">親ID <Anchor component="button" ff="monospace" size="sm" onClick={() => setSel(it.parent)}>{it.parent}</Anchor></Text>}
           <div className="custody-bar">
-            <Text size="sm"><Text span c="dimmed">{it.children.length ? (isSplit ? '分ける前の持ち主 ' : '加工前の持ち主 ') : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge size="xs" ml={6}>あなた</Badge>}</Text>
+            <Text size="sm"><Text span c="dimmed">{it.children.length ? (isSplit ? '分ける前の持ち主 ' : '加工前の持ち主 ') : '今の持ち主 '}</Text><Text span fw={700}>{cu.holderName ?? '—'}</Text>{isHolder && <Badge component="span" size="xs" ml={6}>あなた</Badge>}</Text>
             {kidsWhere.length > 0 && (
               <Text size="sm" className="custody-kids">
                 <Text span c="dimmed">{kw.name} {it.children.length}{kw.unit}：</Text>

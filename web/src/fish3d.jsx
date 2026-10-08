@@ -217,7 +217,7 @@ function buildScene(list) {
     objs.push({ mesh: f.mesh, x })
     addShadow(ground, x, 0, Math.max(0.18, f.r * 0.55), Math.max(0.14, f.r * 0.4), 0.55)
     const dimX = x + f.r + 0.12
-    dims.push({ x, left: x - f.r, dimX, forkY: f.forkY, noseY: f.noseY, topY: f.topY, label: it.label })
+    dims.push({ x, left: x - f.r, dimX, forkY: f.forkY, noseY: f.noseY, topY: f.topY })
     cursor = dimX + (beside ? 0.75 : 0.35)
     top = Math.max(top, f.topY + (beside ? 0 : 0.25))
   }
@@ -356,9 +356,12 @@ function start(canvas, overlay, scene, opts) {
       if (label) { g.textAlign = 'left'; g.textBaseline = 'bottom'; g.fillText(label, a + 14, ya - 4) }
     }
     // 人の背の高さ
-    line(1.7, r.x, r.personX, opts.ink, opts.personLabel)
+    // 文字は描くたびに読む（言語を切り替えても立体を作り直さない）
+    const text = opts.text.current
+    line(1.7, r.x, r.personX, opts.ink, text.person)
     // 魚の体長：尾の切れ込み〜鼻先の寸法線（魚ごと）
-    for (const d of r.dims) {
+    for (const [i, d] of r.dims.entries()) {
+      const label = text.fish[i] ?? ''
       g.lineWidth = 1
       line(d.forkY, d.left, d.dimX + 0.06, opts.accent)
       line(d.noseY, d.left, d.dimX + 0.06, opts.accent)
@@ -369,9 +372,9 @@ function start(canvas, overlay, scene, opts) {
       for (const [y, k] of [[dy0, -1], [dy1, 1]]) { g.beginPath(); g.moveTo(dx - 4, y + k * 6); g.lineTo(dx, y); g.lineTo(dx + 4, y + k * 6); g.stroke() }
       g.font = `700 ${scene.beside ? 14 : 12}px ${opts.font}`
       // 横に入らないとき（スマホ）は、寸法線に沿って縦に書く
-      if (scene.beside && dx + 10 + g.measureText(d.label).width <= cw - 4) { g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText(d.label, dx + 10, (dy0 + dy1) / 2) }
-      else if (scene.beside) { g.save(); g.translate(dx + 8, (dy0 + dy1) / 2); g.rotate(Math.PI / 2); g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText(d.label, 0, 0); g.restore() }
-      else { const [lx, ly] = at(d.x, d.topY); g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText(d.label, lx, ly - 8) }
+      if (scene.beside && dx + 10 + g.measureText(label).width <= cw - 4) { g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText(label, dx + 10, (dy0 + dy1) / 2) }
+      else if (scene.beside) { g.save(); g.translate(dx + 8, (dy0 + dy1) / 2); g.rotate(Math.PI / 2); g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText(label, 0, 0); g.restore() }
+      else { const [lx, ly] = at(d.x, d.topY); g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText(label, lx, ly - 8) }
     }
   }
 
@@ -397,12 +400,14 @@ function start(canvas, overlay, scene, opts) {
   const ro = new ResizeObserver(() => kick())
   ro.observe(canvas)
   kick()
-  return () => {
+  const stop = () => {
     cancelAnimationFrame(raf); io.disconnect(); ro.disconnect()
     canvas.removeEventListener('pointerdown', down); canvas.removeEventListener('pointermove', move)
     canvas.removeEventListener('pointerup', up); canvas.removeEventListener('pointercancel', up)
-    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    // 描画の土台（WebGL）は捨てない：同じキャンバスで作り直すとき（見た目の切り替えなど）に使えなくなるため
   }
+  stop.redraw = kick
+  return stop
 }
 
 // fishes：[{ species, lengthCm, kg, label }]
@@ -410,16 +415,24 @@ export function Fish3D({ fishes, rim, reduce, label, personLabel }) {
   const ref = useRef(null)
   const over = useRef(null)
   const [ok, setOk] = useState(true)
+  // 物差し・寸法線の文字（描くたびにここから読む）
+  const text = useRef(null)
+  text.current = { person: personLabel, fish: fishes.map((f) => f.label) }
+  const running = useRef(null)
+  // 文字が変わったら描き直す（自動で回っていないときのため）
+  useEffect(() => { running.current?.redraw() }, [personLabel, fishes.map((f) => f.label).join('|')])
   useEffect(() => {
+    if (!ref.current || !over.current) return
     const cs = getComputedStyle(ref.current)
     const scene = buildScene(fishes.map((f) => ({ ...f, lengthM: f.lengthCm / 100 })))
     const stop = start(ref.current, over.current, scene, {
-      rim, reduce, personLabel, font: cs.fontFamily,
+      rim, reduce, text, font: cs.fontFamily,
       ink: cs.getPropertyValue('--fg-2').trim() || '#aab', accent: cs.getPropertyValue('--accent').trim() || '#5ccfd8',
     })
     if (!stop) setOk(false)
+    running.current = stop
     return stop ?? undefined
-  }, [fishes.map((f) => [f.species, f.lengthCm, f.kg, f.label].join()).join('|'), rim.join(), reduce, personLabel])
+  }, [fishes.map((f) => [f.species, f.lengthCm, f.kg].join()).join('|'), rim.join(), reduce])
   if (!ok) return null
   return (
     <div className="fish3d-wrap">
