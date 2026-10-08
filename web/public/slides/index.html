@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="気仙沼ハッカツオン2026 チーム魚籍の発表スライド">
+<title>魚籍 GYOSEKI 発表スライド</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: a single reading column of slides under a short masthead, with a page index — deck is dark-navy, so the page commits to that one look */
+:root {
+  --sea: #0E1A33; --deep: #16274A; --line: #2B3E63;
+  --ink: #F4F7FC; --mist: #B9CCEC; --muted: #8FA3C4; --gold: #D4A63C;
+  --sans: "Zen Kaku Gothic New", "Yu Gothic", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+html { background: var(--sea); }
+body { margin: 0; background: var(--sea); color: var(--ink); font-family: var(--sans); line-height: 1.7; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 16px; padding-block: 40px 64px; display: grid; gap: 32px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .18em; color: var(--gold); text-transform: uppercase; }
+h1 { margin: 0; font-size: clamp(28px, 5vw, 44px); line-height: 1.25; text-wrap: balance; }
+h1 small { font-family: var(--mono); font-size: .45em; letter-spacing: .2em; color: var(--gold); margin-left: .5em; }
+.lead { margin: 0; color: var(--mist); max-width: 62ch; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 13px; }
+.meta a { color: var(--gold); }
+details { border: 1px solid var(--line); border-radius: 10px; background: var(--deep); }
+summary { cursor: pointer; padding: 12px 16px; font-weight: 700; color: var(--mist); }
+summary:focus-visible, a:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+ol.toc { list-style: none; margin: 0; padding: 4px 16px 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 20px; }
+ol.toc a { color: var(--ink); text-decoration: none; font-size: 14px; display: flex; gap: 10px; }
+ol.toc a:hover { color: var(--gold); }
+.no { font-family: var(--mono); color: var(--gold); font-variant-numeric: tabular-nums; }
+.deck { display: grid; gap: 28px; }
+.slide { margin: 0; display: grid; gap: 8px; scroll-margin-top: 16px; }
+.slide img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 8px; border: 1px solid var(--line); background: var(--deep); }
+figcaption { display: flex; gap: 10px; font-size: 13px; color: var(--muted); }
+footer { color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Kesennuma Hackathon 2026 ／ 気仙沼ハッカツオン</div>
+    <h1>魚籍<small>GYOSEKI</small></h1>
+    <p class="lead">まぐろの来歴証明。素性のわかるまぐろに、正しい値段を。</p>
+    <div class="meta"><span>ネクストウェア株式会社　榮 翔矢・上野 響</span><span>全22枚</span><span><a href="gyoseki-slides.pdf">PDFで開く</a></span><span><a href="/">アプリを試す</a></span><span><a href="/rfid/">RFIDシミュレーション（3D）</a></span></div>
+  </header>
+  <details>
+    <summary>目次</summary>
+    <ol class="toc">
+<li><a href="#p1"><span class="no">01</span>表紙</a></li>
+<li><a href="#p2"><span class="no">02</span>私たちについて</a></li>
+<li><a href="#p3"><span class="no">03</span>課題① IUU漁業</a></li>
+<li><a href="#p4"><span class="no">04</span>課題② 正直なまぐろの値崩れ</a></li>
+<li><a href="#p5"><span class="no">05</span>魚籍とは</a></li>
+<li><a href="#p6"><span class="no">06</span>発想の転換</a></li>
+<li><a href="#p7"><span class="no">07</span>仕組み</a></li>
+<li><a href="#p8"><span class="no">08</span>なぜブロックチェーン？</a></li>
+<li><a href="#p9"><span class="no">09</span>信頼のつくり方</a></li>
+<li><a href="#p10"><span class="no">10</span>価値の循環</a></li>
+<li><a href="#p11"><span class="no">11</span>実装済みの流れ① 漁船と市場</a></li>
+<li><a href="#p12"><span class="no">12</span>実装済みの流れ② 市場から加工へ</a></li>
+<li><a href="#p13"><span class="no">13</span>実装済みの流れ③ 加工から小売へ</a></li>
+<li><a href="#p14"><span class="no">14</span>消費者が見る画面①</a></li>
+<li><a href="#p15"><span class="no">15</span>消費者が見る画面②</a></li>
+<li><a href="#p16"><span class="no">16</span>今後の展望① ICタグ</a></li>
+<li><a href="#p17"><span class="no">17</span>今後の展望② 加工場</a></li>
+<li><a href="#p18"><span class="no">18</span>事業性</a></li>
+<li><a href="#p19"><span class="no">19</span>横展開</a></li>
+<li><a href="#p20"><span class="no">20</span>今後の課題</a></li>
+<li><a href="#p21"><span class="no">21</span>まとめ</a></li>
+<li><a href="#p22"><span class="no">22</span>出典</a></li>
+    </ol>
+  </details>
+  <main class="deck">
+    <figure class="slide" id="p1">
+      <img src="img/s-01.jpg" alt="スライド1：表紙" width="1600" height="900" loading="eager">
+      <figcaption><span class="no">01</span>表紙</figcaption>
+    </figure>
+    <figure class="slide" id="p2">
+      <img src="img/s-02.jpg" alt="スライド2：私たちについて" width="1600" height="900" loading="eager">
+      <figcaption><span class="no">02</span>私たちについて</figcaption>
+    </figure>
+    <figure class="slide" id="p3">
+      <img src="img/s-03.jpg" alt="スライド3：課題① IUU漁業" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">03</span>課題① IUU漁業</figcaption>
+    </figure>
+    <figure class="slide" id="p4">
+      <img src="img/s-04.jpg" alt="スライド4：課題② 正直なまぐろの値崩れ" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">04</span>課題② 正直なまぐろの値崩れ</figcaption>
+    </figure>
+    <figure class="slide" id="p5">
+      <img src="img/s-05.jpg" alt="スライド5：魚籍とは" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">05</span>魚籍とは</figcaption>
+    </figure>
+    <figure class="slide" id="p6">
+      <img src="img/s-06.jpg" alt="スライド6：発想の転換" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">06</span>発想の転換</figcaption>
+    </figure>
+    <figure class="slide" id="p7">
+      <img src="img/s-07.jpg" alt="スライド7：仕組み" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">07</span>仕組み</figcaption>
+    </figure>
+    <figure class="slide" id="p8">
+      <img src="img/s-08.jpg" alt="スライド8：なぜブロックチェーン？" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">08</span>なぜブロックチェーン？</figcaption>
+    </figure>
+    <figure class="slide" id="p9">
+      <img src="img/s-09.jpg" alt="スライド9：信頼のつくり方" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">09</span>信頼のつくり方</figcaption>
+    </figure>
+    <figure class="slide" id="p10">
+      <img src="img/s-10.jpg" alt="スライド10：価値の循環" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">10</span>価値の循環</figcaption>
+    </figure>
+    <figure class="slide" id="p11">
+      <img src="img/s-11.jpg" alt="スライド11：実装済みの流れ① 漁船と市場" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">11</span>実装済みの流れ① 漁船と市場</figcaption>
+    </figure>
+    <figure class="slide" id="p12">
+      <img src="img/s-12.jpg" alt="スライド12：実装済みの流れ② 市場から加工へ" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">12</span>実装済みの流れ② 市場から加工へ</figcaption>
+    </figure>
+    <figure class="slide" id="p13">
+      <img src="img/s-13.jpg" alt="スライド13：実装済みの流れ③ 加工から小売へ" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">13</span>実装済みの流れ③ 加工から小売へ</figcaption>
+    </figure>
+    <figure class="slide" id="p14">
+      <img src="img/s-14.jpg" alt="スライド14：消費者が見る画面①" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">14</span>消費者が見る画面①</figcaption>
+    </figure>
+    <figure class="slide" id="p15">
+      <img src="img/s-15.jpg" alt="スライド15：消費者が見る画面②" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">15</span>消費者が見る画面②</figcaption>
+    </figure>
+    <figure class="slide" id="p16">
+      <img src="img/s-16.jpg" alt="スライド16：今後の展望① ICタグ" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">16</span>今後の展望① ICタグ</figcaption>
+    </figure>
+    <figure class="slide" id="p17">
+      <img src="img/s-17.jpg" alt="スライド17：今後の展望② 加工場" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">17</span>今後の展望② 加工場</figcaption>
+    </figure>
+    <figure class="slide" id="p18">
+      <img src="img/s-18.jpg" alt="スライド18：事業性" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">18</span>事業性</figcaption>
+    </figure>
+    <figure class="slide" id="p19">
+      <img src="img/s-19.jpg" alt="スライド19：横展開" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">19</span>横展開</figcaption>
+    </figure>
+    <figure class="slide" id="p20">
+      <img src="img/s-20.jpg" alt="スライド20：今後の課題" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">20</span>今後の課題</figcaption>
+    </figure>
+    <figure class="slide" id="p21">
+      <img src="img/s-21.jpg" alt="スライド21：まとめ" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">21</span>まとめ</figcaption>
+    </figure>
+    <figure class="slide" id="p22">
+      <img src="img/s-22.jpg" alt="スライド22：出典" width="1600" height="900" loading="lazy">
+      <figcaption><span class="no">22</span>出典</figcaption>
+    </figure>
+  </main>
+  <footer>© 2026 チーム魚籍（ネクストウェア株式会社）　デモの数値は説明用の例です。</footer>
+</div>
+</body>
+</html>
