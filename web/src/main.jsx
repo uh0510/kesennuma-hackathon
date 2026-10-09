@@ -1966,6 +1966,61 @@ function ScanModal({ opened, onClose, onFound }) {
   )
 }
 
+// 見学・審査用：だれでも各事業者の画面を見られるよう、デモ用アカウントにワンクリックで入れる。
+// パスワードはデモ専用（公開している）。本番の運用では外す
+const DEMO_ACCOUNTS = [
+  { role: 'vessel', label: '漁船', does: '漁獲を申告する', icon: IconSailboat, email: 'vessel@example.com', password: 'hakkatsuon4' },
+  { role: 'market', label: '市場', does: '水揚げを登録し、落札者へ渡す', icon: IconGavel, email: 'market@example.com', password: 'hakkatsuon1' },
+  { role: 'processor', label: '加工会社', does: '受け取って、パックに番号を付ける', icon: IconCut, email: 'processor@example.com', password: 'hakkatsuon2' },
+  { role: 'retailer', label: '小売', does: '受け取って、販売を始める', icon: IconBuildingStore, email: 'retail@example.com', password: 'hakkatsuon3' },
+]
+// 消費者の画面の見本（種類ごとに1つ。ログインなしで開く）
+const DEMO_CONSUMER = [
+  { id: 'KSN-PBF-260329-002-P01', name: 'クロマグロ 柵', note: '大西洋で獲れた1本。船の位置データと一致・立体あり' },
+  { id: 'KSN-SKJ-261007-002-01-P01', name: 'カツオ たたき', note: '水揚げロットを入札の単位に分けたもの・立体あり' },
+  { id: 'KSN-SBF-261007-M001-P01', name: 'ミナミマグロ 加工品', note: '何本かの魚をまとめて加工したもの' },
+  { id: 'KSN-SBF-261007-002', name: 'ミナミマグロ（1本）', note: '申告と船の位置データが合わない例（注意の印）' },
+]
+
+function DemoAccounts() {
+  const [busy, setBusy] = useState(null)
+  const go = async (a) => {
+    setBusy(a.role)
+    try { await signIn(a.email, a.password) } catch (err) { errMsg(err); setBusy(null) }
+  }
+  return (
+    <div className="demo-box">
+      <Text size="xs" fw={700} c="dimmed" ta="center" className="demo-head">デモ用アカウントで見る（押すとそのまま入れます）</Text>
+      <div className="demo-grid">
+        {DEMO_ACCOUNTS.map((a) => (
+          <UnstyledButton key={a.role} type="button" className="demo-card" onClick={() => go(a)} disabled={!!busy}>
+            <div className="demo-icon">{busy === a.role ? <Loader size={16} /> : React.createElement(a.icon, { size: 20 })}</div>
+            <div style={{ minWidth: 0 }}>
+              <Text fw={700} size="sm">{a.label}</Text>
+              <Text size="xs" c="dimmed" lh={1.35}>{a.does}</Text>
+            </div>
+          </UnstyledButton>
+        ))}
+        <div className="demo-card demo-wide demo-cons">
+          <div className="demo-icon"><IconUserSearch size={20} /></div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <Text fw={700} size="sm">消費者</Text>
+            <Text size="xs" c="dimmed" lh={1.35}>パックの QR を読んだときの画面（ログインなし）</Text>
+            <div className="demo-cons-list">
+              {DEMO_CONSUMER.map((c) => (
+                <a key={c.id} href={`/?id=${c.id}`} className="demo-cons-row">
+                  <span style={{ minWidth: 0 }}><b>{c.name}</b><small>{c.note}</small></span>
+                  <IconChevronRight size={16} />
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ログイン画面（管理画面はログインした事業者だけが開ける。QRから開く消費者画面はログイン不要）
 function LoginPage() {
   const isMobile = useIsMobile()
@@ -1992,7 +2047,8 @@ function LoginPage() {
           <PasswordInput label="パスワード" variant="default" radius="md" value={password} onChange={(e) => setPassword(e.currentTarget.value)} autoComplete="current-password" required />
           <Button type="submit" fullWidth size="lg" mt="sm" loading={busy} disabled={!email || !password} leftSection={<IconLogin size={18} />}>ログイン</Button>
         </Stack>
-        <Text ta="center" size="xs" c="dimmed" mt="xl">消費者の方は、商品のラベルの QR を読むと履歴を見られます（ログインは不要です）</Text>
+        <DemoAccounts />
+        <Text ta="center" size="xs" c="dimmed" mt="lg">消費者の方は、商品のラベルの QR を読むと履歴を見られます（ログインは不要です）</Text>
       </form>
     </div>
   )
