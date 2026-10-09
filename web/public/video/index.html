@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>魚籍 デモ動画</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@500;700;900&display=swap">
+<style>
+:root { --bg: #0d1a33; --ink: #ffffff; --muted: #b9c4d8; --accent: #e8b33a; --card: #15264a; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Noto Sans JP", "Yu Gothic", sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 64px; }
+.k { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .3em; color: var(--accent); }
+h1 { margin: 8px 0 6px; font-size: clamp(26px, 4vw, 38px); font-weight: 900; }
+.lead { margin: 0 0 28px; color: var(--muted); }
+section { margin-bottom: 36px; }
+h2 { margin: 0 0 10px; font-size: 18px; }
+h2 small { font-weight: 500; color: var(--muted); margin-left: 8px; font-size: 14px; }
+video { display: block; width: 100%; height: auto; border-radius: 12px; background: #000; }
+footer { color: var(--muted); font-size: 13px; }
+footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <p class="k">DEMO ／ デモ</p>
+  <h1>魚籍 GYOSEKI デモ動画</h1>
+  <p class="lead">1本のまぐろが、漁船の申告から売場に並び、消費者が QR で来歴を見るまで。</p>
+  <section>
+    <h2>デモ動画<small>約2分</small></h2>
+    <video src="gyoseki-demo.mp4" poster="poster.jpg" controls preload="metadata" playsinline></video>
+  </section>
+  <section>
+    <h2>短い版<small>約1分35秒（実際の画面の部分を速めたもの）</small></h2>
+    <video src="gyoseki-demo-short.mp4" poster="poster.jpg" controls preload="metadata" playsinline></video>
+  </section>
+  <footer>アプリ：<a href="https://kesennuma-hackathon.vercel.app/">kesennuma-hackathon.vercel.app</a>　・　船の位置データ：Powered by Global Fishing Watch</footer>
+</main>
+</body>
+</html>
